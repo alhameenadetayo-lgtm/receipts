@@ -20,6 +20,10 @@ CREATE TABLE milestones (
   amount              text NOT NULL,              -- "200.00"
   criteria            jsonb NOT NULL,             -- [{id, text}]
   status              text NOT NULL DEFAULT 'draft',
+  kind                text NOT NULL DEFAULT 'stage',   -- 'deposit' (captured as soon as the client pays) or 'stage'
+  review_state        text NOT NULL DEFAULT 'waiting', -- waiting, delivered, changes_requested (stages only)
+  revision_round      int  NOT NULL DEFAULT 0,
+  max_revisions       int  NOT NULL DEFAULT 2,         -- agreed in scope; change requests beyond it are refused
   paypal_order_id     text UNIQUE,
   approve_url         text,                       -- PayPal payer-action link while awaiting_payment
   status_changed_at   timestamptz NOT NULL DEFAULT now(),
@@ -104,6 +108,17 @@ CREATE TABLE acceptances (
   mandate_id     text REFERENCES mandates(id),
   file_hashes    jsonb NOT NULL,                  -- the sha256 list the client saw when accepting
   accepted_at    timestamptz NOT NULL DEFAULT now()
+);
+
+-- The client's "this criterion is not met yet". The note is untrusted text: shown to people, never obeyed by an agent.
+CREATE TABLE change_requests (
+  id            text PRIMARY KEY,
+  milestone_id  text NOT NULL REFERENCES milestones(id),
+  round         int  NOT NULL,
+  criterion_id  text NOT NULL,
+  note          text NOT NULL,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (milestone_id, round)
 );
 
 -- Every decision an agent or a person makes, with its reason. Shown in the AG Grid console.

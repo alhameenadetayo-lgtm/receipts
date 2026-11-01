@@ -2,7 +2,7 @@
 // Works under Next.js (app/api/[...path]/route.ts) or the plain Node server in server.ts.
 // Money moves only through PayPal; each PayPal POST carries a fixed request id so retries never act twice.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { STATUS_LABEL, type LedgerRow, type MilestoneStatus, type MilestoneView } from './contract.ts';
+import { STATUS_LABEL, type JobProgress, type LedgerRow, type MilestoneStatus, type MilestoneView } from './contract.ts';
 import type { Db, Query } from './db.ts';
 import { applyEvent, canTransition, reservationState } from './ledger.ts';
 import { PaypalError, type Paypal } from './paypal.ts';
@@ -123,12 +123,13 @@ async function upsertCapture(q: Query, milestoneId: string, authorizationId: str
 }
 
 async function milestoneView(q: Query, ms: any): Promise<MilestoneView> {
-  const [files, auth, cap, dispute, acc] = await Promise.all([
+  const [files, auth, cap, dispute, acc, changes] = await Promise.all([
     q('SELECT id, filename, sha256, criterion_id FROM evidence_files WHERE milestone_id = $1 ORDER BY uploaded_at', [ms.id]),
     latestAuthorization(q, ms.id),
     q('SELECT * FROM captures WHERE milestone_id = $1', [ms.id]),
     q('SELECT * FROM disputes WHERE milestone_id = $1 ORDER BY updated_at DESC LIMIT 1', [ms.id]),
     q('SELECT accepted_by, accepted_at FROM acceptances WHERE milestone_id = $1', [ms.id]),
+    q('SELECT round, criterion_id, note, created_at FROM change_requests WHERE milestone_id = $1 ORDER BY round', [ms.id]),
   ]);
   const c = cap.rows[0];
   const d = dispute.rows[0];
@@ -138,7 +139,12 @@ async function milestoneView(q: Query, ms: any): Promise<MilestoneView> {
     id: ms.id,
     jobId: ms.job_id,
     position: ms.position,
+    kind: ms.kind,
     title: ms.title,
+    reviewState: ms.review_state,
+    revisionRound: ms.revision_round,
+    maxRevisions: ms.max_revisions,
+    changeRequests: changes.rows.map((r: any) => ({ round: r.round, criterionId: r.criterion_id, note: r.note, at: iso(r.created_at)! })),
     amount: ms.amount,
     criteria: ms.criteria,
     status,
@@ -159,7 +165,45 @@ function jobView(j: any) {
 async function jobWithMilestones(q: Query, jobId: string) {
   const job = (await q('SELECT * FROM jobs WHERE id = $1', [jobId])).rows[0];
   const ms = (await q('SELECT * FROM milestones WHERE job_id = $1 ORDER BY position', [jobId])).rows;
-  return { job: jobView(job), milestones: await Promise.all(ms.map((m: any) => milestoneView(q, m))) };
+  const milestones = await Promise.all(ms.map((m: any) => milestoneView(q, m)));
+  return { job: jobView(job), milestones, progress: progress(milestones) };
+}
+
+const PAID: MilestoneStatus[] = ['captured', 'capture_pending', 'disputed', 'dispute_closed'];
+
+// What the shared progress bar shows. Cents as integers, so no float drift.
+function progress(milestones: MilestoneView[]): JobProgress {
+  const sum = (list: MilestoneView[]) => list.reduce((n, m) => n + cents(m.amount), 0);
+  const total = sum(milestones);
+  const paid = milestones.filter((m) => PAID.includes(m.status));
+  const money = (c: number) => `${Math.floor(c / 100)}.${String(c % 100).padStart(2, '0')}`;
+  return {
+    total: money(total),
+    paid: money(sum(paid)),
+    reserved: money(sum(milestones.filter((m) => m.status === 'reserved'))),
+    percentPaid: total ? Math.round((sum(paid) / total) * 100) : 0,
+    stagesPaid: paid.length,
+    stages: milestones.length,
+  };
+}
+
+// Captures a reserved milestone (reauthorizing first if past the 3-day honour period) and sets its status.
+async function captureReserved(d: Deps, q: Query, ms: any, now: Date) {
+  let auth = await latestAuthorization(q, ms.id);
+  if (!auth) throw new HttpError(409, 'no authorization on file');
+  const state = reservationState(iso(auth.expiration_time)!, iso(auth.created_at)!, now);
+  if (state === 'expired') throw new HttpError(409, 'reservation expired; request payment again');
+  if (state === 'needs_reauthorize') {
+    const re = await d.paypal.call('POST', `/v2/payments/authorizations/${auth.id}/reauthorize`, {}, `reauthorize-${auth.id}`);
+    await upsertAuthorization(q, ms.id, re, auth.id);
+    await audit(q, 'system', 'reauthorized', ms.id, 'n/a', `past the 3-day honour period; new authorization ${re.id}`);
+    auth = { ...auth, id: re.id };
+  }
+  const cap = await d.paypal.call('POST', `/v2/payments/authorizations/${auth.id}/capture`, { final_capture: true }, `capture-${ms.id}`);
+  await upsertCapture(q, ms.id, auth.id, cap);
+  await q("UPDATE authorizations SET status = 'CAPTURED' WHERE id = $1", [auth.id]);
+  const to: MilestoneStatus = cap.status === 'COMPLETED' ? 'captured' : cap.status === 'PENDING' ? 'capture_pending' : 'capture_failed';
+  await setStatus(q, ms, to, 'system', `capture ${cap.id} ${cap.status}${cap.status_details?.reason ? ` (${cap.status_details.reason})` : ''}`);
 }
 
 // ---- routes -------------------------------------------------------------------------------------
@@ -173,7 +217,7 @@ async function createJob(d: Deps, req: Request) {
   if (!Array.isArray(b.milestones) || b.milestones.length < 1 || b.milestones.length > 20) {
     throw new HttpError(400, 'milestones must be a list of 1-20');
   }
-  const milestones = b.milestones.map((m: any, i: number) => {
+  const milestones: { kind?: string; title: string; amount: string; criteria: { id: string; text: string }[] }[] = b.milestones.map((m: any, i: number) => {
     if (!Array.isArray(m?.criteria) || m.criteria.length < 1 || m.criteria.length > 20) {
       throw new HttpError(400, `milestones[${i}].criteria must be a list of 1-20`);
     }
@@ -183,6 +227,12 @@ async function createJob(d: Deps, req: Request) {
       criteria: m.criteria.map((c: unknown, k: number) => ({ id: `c${k + 1}`, text: text(c, `milestones[${i}].criteria[${k}]`, 500) })),
     };
   });
+  const maxRevisions = b.maxRevisions ?? 2;
+  if (!Number.isInteger(maxRevisions) || maxRevisions < 0 || maxRevisions > 5) throw new HttpError(400, 'maxRevisions must be 0-5');
+  if (b.deposit !== undefined) {
+    milestones.unshift({ kind: 'deposit', title: 'Deposit', amount: money(b.deposit, 'deposit'),
+      criteria: [{ id: 'c1', text: 'Scope and stage plan agreed' }] });
+  }
   const jobId = newId('job');
   const freelancerKey = newKey();
   const clientKey = newKey();
@@ -191,9 +241,9 @@ async function createJob(d: Deps, req: Request) {
       [jobId, title, clientName, clientEmail, hashKey(freelancerKey), hashKey(clientKey)]);
     for (const [i, m] of milestones.entries()) {
       const id = newId('ms');
-      await q('INSERT INTO milestones (id, job_id, position, title, amount, criteria) VALUES ($1,$2,$3,$4,$5,$6)',
-        [id, jobId, i + 1, m.title, m.amount, JSON.stringify(m.criteria)]);
-      await audit(q, 'freelancer', 'milestone scoped', id, 'n/a', `${m.title}, $${m.amount}`);
+      await q('INSERT INTO milestones (id, job_id, position, kind, title, amount, criteria, max_revisions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+        [id, jobId, i + 1, m.kind ?? 'stage', m.title, m.amount, JSON.stringify(m.criteria), maxRevisions]);
+      await audit(q, 'freelancer', `${m.kind ?? 'stage'} scoped`, id, 'n/a', `${m.title}, $${m.amount}`);
     }
     return jobWithMilestones(q, jobId);
   });
@@ -264,7 +314,13 @@ async function paypalReturn(d: Deps, url: URL) {
     if (!auth?.id) throw new HttpError(502, 'PayPal returned no authorization');
     await upsertAuthorization(q, ms.id, auth);
     await setStatus(q, ms, 'reserved', 'system', `authorization ${auth.id} ${auth.status}, $${auth.amount?.value}`);
-    return 'reserved';
+    if (ms.kind !== 'deposit') return 'reserved';
+    // A deposit is the client agreeing to the scope and stage plan, so it is taken straight away.
+    await q('INSERT INTO acceptances (id, milestone_id, accepted_by, file_hashes) VALUES ($1,$2,$3,$4) ON CONFLICT (milestone_id) DO NOTHING',
+      [newId('acc'), ms.id, 'client', '[]']);
+    await audit(q, 'client', 'scope agreed by paying the deposit', ms.id, 'approve', `deposit $${ms.amount}`);
+    await captureReserved(d, q, ms, d.now?.() ?? new Date());
+    return ms.status === 'captured' ? 'paid' : ms.status;
   });
   return back(result);
 }
@@ -292,6 +348,7 @@ async function uploadFile(d: Deps, req: Request, msId: string) {
   const id = newId('file');
   await d.db.transaction(async (q) => {
     const ms = await loadMilestone(q, msId, true);
+    if (ms.kind === 'deposit') throw new HttpError(409, 'files go on a stage, not the deposit');
     if (!['draft', 'awaiting_payment', 'approved', 'reserved'].includes(ms.status)) {
       throw new HttpError(409, `cannot add files while ${ms.status}`);
     }
@@ -300,9 +357,38 @@ async function uploadFile(d: Deps, req: Request, msId: string) {
     }
     await q('INSERT INTO evidence_files (id, milestone_id, criterion_id, filename, mime_type, sha256, bytes) VALUES ($1,$2,$3,$4,$5,$6,$7)',
       [id, msId, criterionId, filename, (file.type || 'application/octet-stream').slice(0, 100), sha256, bytes]);
+    await q("UPDATE milestones SET review_state = 'delivered' WHERE id = $1", [msId]);
     await audit(q, 'freelancer', 'file delivered', msId, 'n/a', `${filename} sha256 ${sha256}`);
   });
   return json(201, { id, filename, sha256 });
+}
+
+// The client says which criterion is not met yet. Counted against the revision rounds agreed in scope.
+async function requestChanges(d: Deps, req: Request, msId: string) {
+  const first = await loadMilestone(d.db.query, msId);
+  await authJob(d.db.query, req, first.job_id, ['client']);
+  const b = await body(req);
+  const note = text(b.note, 'note', 1000);
+  if (typeof b.criterionId !== 'string' || !first.criteria.some((c: any) => c.id === b.criterionId)) {
+    throw new HttpError(400, 'criterionId must be one of this stage\'s criteria');
+  }
+  const view = await d.db.transaction(async (q) => {
+    const ms = await loadMilestone(q, msId, true);
+    if (ms.kind === 'deposit' || ms.status !== 'reserved' || ms.review_state !== 'delivered') {
+      throw new HttpError(409, 'changes can be requested only on a delivered stage that is not yet paid');
+    }
+    if (ms.revision_round >= ms.max_revisions) {
+      await audit(q, 'client', 'change request refused', msId, 'deny', `all ${ms.max_revisions} agreed revision rounds used`);
+      throw new HttpError(409, `all ${ms.max_revisions} agreed revision rounds are used; agree a way forward or open a PayPal dispute`);
+    }
+    const round = ms.revision_round + 1;
+    await q('INSERT INTO change_requests (id, milestone_id, round, criterion_id, note) VALUES ($1,$2,$3,$4,$5)',
+      [newId('chg'), msId, round, b.criterionId, note]);
+    await q("UPDATE milestones SET review_state = 'changes_requested', revision_round = $2 WHERE id = $1", [msId, round]);
+    await audit(q, 'client', 'changes requested', msId, 'n/a', `round ${round} of ${ms.max_revisions}, criterion ${b.criterionId}`);
+    return milestoneView(q, { ...ms, review_state: 'changes_requested', revision_round: round });
+  });
+  return json(200, view);
 }
 
 async function createMandate(d: Deps, req: Request, jobId: string) {
@@ -352,9 +438,13 @@ async function accept(d: Deps, req: Request, msId: string) {
 
   const view = await d.db.transaction(async (q) => {
     const ms = await loadMilestone(q, msId, true);
+    if (ms.kind === 'deposit') throw new HttpError(409, 'a deposit is paid when the client pays it; nothing to accept');
     const already = (await q('SELECT 1 FROM acceptances WHERE milestone_id = $1', [msId])).rows.length > 0;
     if (already && ms.status !== 'reserved') return milestoneView(q, ms); // repeated accept: nothing to do
     if (ms.status !== 'reserved') throw new HttpError(409, `cannot accept while ${ms.status}`);
+    if (!already && ms.review_state === 'changes_requested') {
+      throw new HttpError(409, 'changes were requested; waiting for the freelancer to deliver again');
+    }
     const files = (await q('SELECT sha256 FROM evidence_files WHERE milestone_id = $1 ORDER BY uploaded_at', [msId])).rows;
     if (!files.length) throw new HttpError(409, 'nothing delivered yet: upload at least one file first');
     if (!already) {
@@ -362,21 +452,7 @@ async function accept(d: Deps, req: Request, msId: string) {
         [newId('acc'), msId, actor, mandateId, JSON.stringify(files.map((f: any) => f.sha256))]);
       await audit(q, actor, 'work accepted', msId, 'approve', `${files.length} file(s) seen`, { mandateId });
     }
-    let auth = await latestAuthorization(q, msId);
-    if (!auth) throw new HttpError(409, 'no authorization on file');
-    const state = reservationState(iso(auth.expiration_time)!, iso(auth.created_at)!, now);
-    if (state === 'expired') throw new HttpError(409, 'reservation expired; request payment again');
-    if (state === 'needs_reauthorize') {
-      const re = await d.paypal.call('POST', `/v2/payments/authorizations/${auth.id}/reauthorize`, {}, `reauthorize-${auth.id}`);
-      await upsertAuthorization(q, msId, re, auth.id);
-      await audit(q, 'system', 'reauthorized', msId, 'n/a', `past the 3-day honour period; new authorization ${re.id}`);
-      auth = { ...auth, id: re.id };
-    }
-    const cap = await d.paypal.call('POST', `/v2/payments/authorizations/${auth.id}/capture`, { final_capture: true }, `capture-${msId}`);
-    await upsertCapture(q, msId, auth.id, cap);
-    await q("UPDATE authorizations SET status = 'CAPTURED' WHERE id = $1", [auth.id]);
-    const to: MilestoneStatus = cap.status === 'COMPLETED' ? 'captured' : cap.status === 'PENDING' ? 'capture_pending' : 'capture_failed';
-    await setStatus(q, ms, to, 'system', `capture ${cap.id} ${cap.status}${cap.status_details?.reason ? ` (${cap.status_details.reason})` : ''}`);
+    await captureReserved(d, q, ms, now);
     return milestoneView(q, ms);
   });
   return json(200, view);
@@ -515,7 +591,8 @@ async function ledger(d: Deps, req: Request, url: URL) {
   if (!jobId) throw new HttpError(400, 'jobId is required');
   await authJob(d.db.query, req, jobId, ['freelancer']);
   const { rows } = await d.db.query(`
-    SELECT m.id, m.job_id, j.title AS job_title, m.title, m.amount, m.status, m.paypal_order_id, m.status_changed_at,
+    SELECT m.id, m.job_id, j.title AS job_title, m.position, m.kind, m.title, m.amount, m.status, m.review_state, m.revision_round,
+      m.paypal_order_id, m.status_changed_at,
       (SELECT a.id FROM authorizations a WHERE a.milestone_id = m.id ORDER BY a.created_at DESC LIMIT 1) AS authorization_id,
       c.id AS capture_id, c.paypal_fee, c.net,
       (SELECT dp.id FROM disputes dp WHERE dp.milestone_id = m.id ORDER BY dp.updated_at DESC LIMIT 1) AS dispute_id,
@@ -523,7 +600,8 @@ async function ledger(d: Deps, req: Request, url: URL) {
     FROM milestones m JOIN jobs j ON j.id = m.job_id LEFT JOIN captures c ON c.milestone_id = m.id
     WHERE m.job_id = $1 ORDER BY m.position`, [jobId]);
   const out: LedgerRow[] = rows.map((r: any) => ({
-    milestoneId: r.id, jobId: r.job_id, jobTitle: r.job_title, title: r.title, amount: r.amount,
+    milestoneId: r.id, jobId: r.job_id, jobTitle: r.job_title, position: r.position, kind: r.kind, title: r.title, amount: r.amount,
+    reviewState: r.review_state, revisionRound: r.revision_round,
     status: r.status, statusLabel: STATUS_LABEL[r.status as MilestoneStatus], orderId: r.paypal_order_id,
     authorizationId: r.authorization_id, captureId: r.capture_id, fee: r.paypal_fee, net: r.net,
     disputeId: r.dispute_id, disputeStatus: r.dispute_status, updatedAt: iso(r.status_changed_at)!,
@@ -556,6 +634,7 @@ export function createHandler(deps: Deps) {
       if (a === 'milestones' && id && m === 'POST') {
         if (sub === 'request-payment') return await requestPayment(deps, req, id);
         if (sub === 'files') return await uploadFile(deps, req, id);
+        if (sub === 'request-changes') return await requestChanges(deps, req, id);
         if (sub === 'accept') return await accept(deps, req, id);
         if (sub === 'void') return await voidMilestone(deps, req, id);
       }
