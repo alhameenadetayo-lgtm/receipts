@@ -55,18 +55,30 @@ export type MilestoneView = {
 };
 
 // Routes Lane A serves. Lane B's pages call only these.
+// Auth (added 1 Nov): send "Authorization: Bearer <key>". createJob returns a freelancerKey and a clientKey once;
+// only their sha256 is stored. [F] = freelancer key, [C] = client key, [A] = agent key from createMandate,
+// [F/C] = either. Errors are {error: string} with 400/401/403/404/409/502.
 export const ROUTES = {
-  createJob:        'POST /api/jobs',                                  // {title, clientName, clientEmail, milestones:[{title, amount, criteria}]}
-  getJob:           'GET  /api/jobs/:jobId',                           // -> {job, milestones: MilestoneView[]}
-  requestPayment:   'POST /api/milestones/:id/request-payment',        // -> {approveUrl}
-  paypalReturn:     'GET  /api/paypal/return?token=:orderId',          // client lands here after approving; server authorizes
-  uploadFile:       'POST /api/milestones/:id/files',                  // multipart, field "file", optional criterionId
-  accept:           'POST /api/milestones/:id/accept',                 // {by:'client'} or {by:'client_agent', mandateId}
-  voidMilestone:    'POST /api/milestones/:id/void',                   // freelancer cancels before acceptance
-  paypalWebhook:    'POST /api/paypal/webhook',                        // PayPal only
-  ledger:           'GET  /api/ledger',                                // rows for the AG Grid console
-  audit:            'GET  /api/audit?milestoneId=:id',
+  createJob:        'POST /api/jobs',                                  // {title, clientName, clientEmail, milestones:[{title, amount, criteria:[text]}]} -> {job, milestones, freelancerKey, clientKey}
+  getJob:           'GET  /api/jobs/:jobId',                           // [F/C] -> {job, milestones: MilestoneView[]}
+  requestPayment:   'POST /api/milestones/:id/request-payment',        // [F] -> {approveUrl}
+  paypalReturn:     'GET  /api/paypal/return?token=:orderId',          // client lands here after approving; server authorizes, then redirects to /jobs/:jobId
+  uploadFile:       'POST /api/milestones/:id/files',                  // [F] multipart, field "file" (max 10 MB), optional criterionId -> {id, filename, sha256}
+  createMandate:    'POST /api/jobs/:jobId/mandates',                  // [C] {maxAmount, days} -> {mandateId, agentKey, expiresAt}
+  accept:           'POST /api/milestones/:id/accept',                 // [C] {by:'client'} or [A] {by:'client_agent', mandateId} -> MilestoneView
+  voidMilestone:    'POST /api/milestones/:id/void',                   // [F] freelancer cancels before acceptance -> MilestoneView
+  paypalWebhook:    'POST /api/paypal/webhook',                        // PayPal only, signature verified
+  ledger:           'GET  /api/ledger?jobId=:jobId',                   // [F] rows for the AG Grid console
+  audit:            'GET  /api/audit?milestoneId=:id',                 // [F]
 } as const;
+
+// One row of GET /api/ledger.
+export type LedgerRow = {
+  milestoneId: string; jobId: string; jobTitle: string; title: string; amount: string;
+  status: MilestoneStatus; statusLabel: string; orderId: string | null; authorizationId: string | null;
+  captureId: string | null; fee: string | null; net: string | null; disputeId: string | null;
+  disputeStatus: string | null; updatedAt: string;
+};
 
 // Webhook events we subscribe to (spike/06-webhook.mjs registers the same list).
 export const PAYPAL_EVENTS = [

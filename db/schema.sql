@@ -7,6 +7,8 @@ CREATE TABLE jobs (
   client_name   text NOT NULL,
   client_email  text NOT NULL,
   currency      text NOT NULL DEFAULT 'USD',
+  freelancer_key_hash text NOT NULL,              -- sha256 of the freelancer's bearer key; the key itself is never stored
+  client_key_hash     text NOT NULL,              -- sha256 of the client's bearer key
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 
@@ -19,6 +21,7 @@ CREATE TABLE milestones (
   criteria            jsonb NOT NULL,             -- [{id, text}]
   status              text NOT NULL DEFAULT 'draft',
   paypal_order_id     text UNIQUE,
+  approve_url         text,                       -- PayPal payer-action link while awaiting_payment
   status_changed_at   timestamptz NOT NULL DEFAULT now(),
   UNIQUE (job_id, position)
 );
@@ -88,8 +91,10 @@ CREATE TABLE mandates (
   id            text PRIMARY KEY,
   job_id        text NOT NULL REFERENCES jobs(id),
   max_amount    text NOT NULL,
+  key_hash      text NOT NULL,                    -- sha256 of the agent's bearer key
   expires_at    timestamptz NOT NULL,
-  revoked_at    timestamptz
+  revoked_at    timestamptz,
+  created_at    timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE acceptances (
