@@ -628,6 +628,7 @@ export function createHandler(deps: Deps) {
     try {
       if (p[0] !== 'api') throw new HttpError(404, 'not found');
       const [, a, id, sub] = p;
+      if (a === 'health' && m === 'GET') return json(200, { ok: true });
       if (a === 'jobs' && !id && m === 'POST') return await createJob(deps, req);
       if (a === 'jobs' && id && !sub && m === 'GET') return await getJob(deps, req, id);
       if (a === 'jobs' && id && sub === 'mandates' && m === 'POST') return await createMandate(deps, req, id);

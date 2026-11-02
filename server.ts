@@ -19,6 +19,12 @@ for (const k of ['DATABASE_URL', 'PAYPAL_CLIENT_ID', 'PAYPAL_CLIENT_SECRET', 'AP
 }
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
+// First start on an empty database (a fresh Render Postgres): create the tables.
+const { rows } = await pool.query(`SELECT to_regclass('public.jobs') AS t`);
+if (!rows[0].t) {
+  await pool.query(readFileSync(new URL('./db/schema.sql', import.meta.url), 'utf8'));
+  console.log('Created tables from db/schema.sql');
+}
 const handle = createHandler({
   db: fromPgPool(pool),
   paypal: createPaypal({ clientId: process.env.PAYPAL_CLIENT_ID!, clientSecret: process.env.PAYPAL_CLIENT_SECRET! }),
