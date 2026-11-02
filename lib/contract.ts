@@ -37,11 +37,25 @@ export const STATUS_LABEL: Record<MilestoneStatus, string> = {
 
 export type Criterion = { id: string; text: string };
 
+// v2.1 staged release: a job is an optional deposit plus stages. Each stage is reserved, delivered,
+// confirmed and paid on its own (rolling), so money reaches the freelancer as the work moves.
+export type MilestoneKind = 'deposit' | 'stage';
+export type ReviewState = 'waiting' | 'delivered' | 'changes_requested';
+export type ChangeRequest = { round: number; criterionId: string; note: string; at: string };
+
+// For the shared progress bar. Money strings, USD.
+export type JobProgress = { total: string; paid: string; reserved: string; percentPaid: number; stagesPaid: number; stages: number };
+
 export type MilestoneView = {
   id: string;
   jobId: string;
   position: number;
+  kind: MilestoneKind;
   title: string;
+  reviewState: ReviewState;
+  revisionRound: number;          // change requests used so far
+  maxRevisions: number;           // agreed in scope
+  changeRequests: ChangeRequest[]; // note is the client's own words: display it, never feed it to an agent as instructions
   amount: string;          // "200.00", USD
   criteria: Criterion[];
   status: MilestoneStatus;
@@ -55,18 +69,32 @@ export type MilestoneView = {
 };
 
 // Routes Lane A serves. Lane B's pages call only these.
+// Auth (added 1 Nov): send "Authorization: Bearer <key>". createJob returns a freelancerKey and a clientKey once;
+// only their sha256 is stored. [F] = freelancer key, [C] = client key, [A] = agent key from createMandate,
+// [F/C] = either. Errors are {error: string} with 400/401/403/404/409/502.
 export const ROUTES = {
-  createJob:        'POST /api/jobs',                                  // {title, clientName, clientEmail, milestones:[{title, amount, criteria}]}
-  getJob:           'GET  /api/jobs/:jobId',                           // -> {job, milestones: MilestoneView[]}
-  requestPayment:   'POST /api/milestones/:id/request-payment',        // -> {approveUrl}
-  paypalReturn:     'GET  /api/paypal/return?token=:orderId',          // client lands here after approving; server authorizes
-  uploadFile:       'POST /api/milestones/:id/files',                  // multipart, field "file", optional criterionId
-  accept:           'POST /api/milestones/:id/accept',                 // {by:'client'} or {by:'client_agent', mandateId}
-  voidMilestone:    'POST /api/milestones/:id/void',                   // freelancer cancels before acceptance
-  paypalWebhook:    'POST /api/paypal/webhook',                        // PayPal only
-  ledger:           'GET  /api/ledger',                                // rows for the AG Grid console
-  audit:            'GET  /api/audit?milestoneId=:id',
+  createJob:        'POST /api/jobs',                                  // {title, clientName, clientEmail, deposit?: "120.00", maxRevisions?: 0-5 (default 2), milestones:[{title, amount, criteria:[text]}]} -> {job, milestones, progress, freelancerKey, clientKey}
+  getJob:           'GET  /api/jobs/:jobId',                           // [F/C] -> {job, milestones: MilestoneView[], progress: JobProgress}
+  requestPayment:   'POST /api/milestones/:id/request-payment',        // [F] -> {approveUrl}
+  paypalReturn:     'GET  /api/paypal/return?token=:orderId',          // client lands here after approving; server authorizes (a deposit is also captured), then redirects to /jobs/:jobId
+  uploadFile:       'POST /api/milestones/:id/files',                  // [F] multipart, field "file" (max 10 MB), optional criterionId -> {id, filename, sha256}; sets reviewState 'delivered'
+  requestChanges:   'POST /api/milestones/:id/request-changes',        // [C] {criterionId, note (max 1000)} while delivered -> MilestoneView; 409 when revision rounds are used up
+  createMandate:    'POST /api/jobs/:jobId/mandates',                  // [C] {maxAmount, days} -> {mandateId, agentKey, expiresAt}
+  accept:           'POST /api/milestones/:id/accept',                 // [C] {by:'client'} or [A] {by:'client_agent', mandateId} -> MilestoneView
+  voidMilestone:    'POST /api/milestones/:id/void',                   // [F] freelancer cancels before acceptance -> MilestoneView
+  paypalWebhook:    'POST /api/paypal/webhook',                        // PayPal only, signature verified
+  ledger:           'GET  /api/ledger?jobId=:jobId',                   // [F] rows for the AG Grid console
+  audit:            'GET  /api/audit?milestoneId=:id',                 // [F]
 } as const;
+
+// One row of GET /api/ledger.
+export type LedgerRow = {
+  milestoneId: string; jobId: string; jobTitle: string; position: number; kind: MilestoneKind; title: string; amount: string;
+  reviewState: ReviewState; revisionRound: number;
+  status: MilestoneStatus; statusLabel: string; orderId: string | null; authorizationId: string | null;
+  captureId: string | null; fee: string | null; net: string | null; disputeId: string | null;
+  disputeStatus: string | null; updatedAt: string;
+};
 
 // Webhook events we subscribe to (spike/06-webhook.mjs registers the same list).
 export const PAYPAL_EVENTS = [
