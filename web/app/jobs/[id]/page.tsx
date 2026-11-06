@@ -1,6 +1,6 @@
 "use client";
 import { use, useCallback, useEffect, useState } from "react";
-import { absorbFragment, api, keyFor, saveJob, type JobResponse, type MilestoneView, type Role, type SavedJob } from "../../../components/api";
+import { absorbFragment, api, privateLink, keyFor, saveJob, type JobResponse, type MilestoneView, type Role, type SavedJob } from "../../../components/api";
 import { ProgressBar } from "../../../components/ProgressBar";
 import { pillClass } from "../../../components/status";
 
@@ -17,11 +17,21 @@ export default function JobPage({ params, searchParams }: { params: Promise<{ id
   const [me, setMe] = useState<SavedJob | null | undefined>(undefined);
   const [data, setData] = useState<JobResponse | null>(null);
   const [err, setErr] = useState("");
+  const [linkErr, setLinkErr] = useState(false);
   const [note, setNote] = useState(sp.payment ? PAYMENT_MSG[sp.payment] ?? `PayPal: ${sp.payment.replace(/_/g, " ")}` : "");
 
   useEffect(() => {
-    const fromLink = absorbFragment(id);
-    setMe(keyFor(id, fromLink ?? (sp.as === "client" ? "client" : undefined)) ?? null);
+    let live = true;
+    absorbFragment(id)
+      .then((fromLink) => {
+        if (live) setMe(keyFor(id, fromLink ?? (sp.as === "client" ? "client" : undefined)) ?? null);
+      })
+      .catch(() => {
+        if (live) setLinkErr(true);
+      });
+    return () => {
+      live = false;
+    };
   }, [id, sp.as]);
 
   const load = useCallback(async () => {
@@ -42,7 +52,8 @@ export default function JobPage({ params, searchParams }: { params: Promise<{ id
     return () => clearInterval(t);
   }, [load]);
 
-  if (me === undefined) return null;
+  if (linkErr) return <main className="wrap"><p className="err">Couldn&apos;t check your link because the server may be waking up. Reload this page in a minute.</p></main>;
+  if (me === undefined) return <main className="wrap"><p className="muted">Loading… the server may take a minute to wake up.</p></main>;
   if (me === null)
     return (
       <main className="wrap">
@@ -80,6 +91,13 @@ export default function JobPage({ params, searchParams }: { params: Promise<{ id
           <Milestone key={m.id} m={m} role={role} keyValue={me.key} act={act} />
         ))}
       </div>
+      {role === "freelancer" && (
+        <div className="panel">
+          <h2>Your backup link</h2>
+          <p className="muted">This browser holds your only key to this job. Save this link somewhere private, so you can get back in from another device or if this browser&apos;s data is cleared. Don&apos;t share it.</p>
+          <button onClick={() => navigator.clipboard?.writeText(privateLink(id, me.key))}>Copy my backup link</button>
+        </div>
+      )}
       {role === "client" && <MandateBox jobId={id} keyValue={me.key} />}
     </main>
   );
@@ -217,6 +235,7 @@ function MandateBox({ jobId, keyValue }: { jobId: string; keyValue: string }) {
   const [days, setDays] = useState(7);
   const [out, setOut] = useState<{ mandateId: string; agentKey: string; expiresAt: string } | null>(null);
   const [err, setErr] = useState("");
+  const [revoked, setRevoked] = useState("");
   return (
     <div className="panel">
       <h2>Let your own AI agent accept stages</h2>
@@ -233,6 +252,19 @@ function MandateBox({ jobId, keyValue }: { jobId: string; keyValue: string }) {
           setErr((e as Error).message);
         }
       }}>Create mandate</button>
+      <button className="danger" style={{ marginTop: 8, marginLeft: 8 }} onClick={async () => {
+        if (!confirm("Cancel every agent permission on this job? Their keys stop working straight away.")) return;
+        setErr("");
+        setRevoked("");
+        try {
+          const r = await api<{ revoked: number }>(`/api/jobs/${jobId}/mandates/revoke`, { key: keyValue, json: {} });
+          setOut(null);
+          setRevoked(r.revoked ? `Cancelled ${r.revoked} agent permission${r.revoked === 1 ? "" : "s"}.` : "No agent permissions were active.");
+        } catch (e) {
+          setErr((e as Error).message);
+        }
+      }}>Cancel all agent permissions</button>
+      {revoked && <p className="ok">{revoked}</p>}
       {err && <p className="err">{err}</p>}
       {out && (
         <div className="note">

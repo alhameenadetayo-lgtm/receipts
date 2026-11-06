@@ -71,16 +71,17 @@ export type MilestoneView = {
 // Routes Lane A serves. Lane B's pages call only these.
 // Auth (added 1 Nov): send "Authorization: Bearer <key>". createJob returns a freelancerKey and a clientKey once;
 // only their sha256 is stored. [F] = freelancer key, [C] = client key, [A] = agent key from createMandate,
-// [F/C] = either. Errors are {error: string} with 400/401/403/404/409/502.
+// [F/C] = either. Errors are {error: string} with 400/401/403/404/409/413/429/502.
 export const ROUTES = {
   createJob:        'POST /api/jobs',                                  // {title, clientName, clientEmail, deposit?: "120.00", maxRevisions?: 0-5 (default 2), milestones:[{title, amount, criteria:[text]}]} -> {job, milestones, progress, freelancerKey, clientKey}
   getJob:           'GET  /api/jobs/:jobId',                           // [F/C] -> {job, milestones: MilestoneView[], progress: JobProgress}
   requestPayment:   'POST /api/milestones/:id/request-payment',        // [F] -> {approveUrl}
   paypalReturn:     'GET  /api/paypal/return?token=:orderId',          // client lands here after approving; server authorizes (a deposit is also captured), then redirects to /jobs/:jobId
-  uploadFile:       'POST /api/milestones/:id/files',                  // [F] multipart, field "file" (max 10 MB), optional criterionId -> {id, filename, sha256}; sets reviewState 'delivered'
+  uploadFile:       'POST /api/milestones/:id/files',                  // [F] once reserved; multipart, field "file" (max 10 MB, 20 files or 50 MB a stage), optional criterionId -> {id, filename, sha256}; sets reviewState 'delivered'
   requestChanges:   'POST /api/milestones/:id/request-changes',        // [C] {criterionId, note (max 1000)} while delivered -> MilestoneView; 409 when revision rounds are used up
   createMandate:    'POST /api/jobs/:jobId/mandates',                  // [C] {maxAmount, days} -> {mandateId, agentKey, expiresAt}
-  accept:           'POST /api/milestones/:id/accept',                 // [C] {by:'client'} or [A] {by:'client_agent', mandateId} -> MilestoneView
+  revokeMandates:   'POST /api/jobs/:jobId/mandates/revoke',           // [C] ends every agent permission on this job -> {revoked: number}
+  accept:           'POST /api/milestones/:id/accept',                // [C] {by:'client'} or [A] {by:'client_agent', mandateId} -> MilestoneView
   voidMilestone:    'POST /api/milestones/:id/void',                   // [F] freelancer cancels before acceptance -> MilestoneView
   paypalWebhook:    'POST /api/paypal/webhook',                        // PayPal only, signature verified
   ledger:           'GET  /api/ledger?jobId=:jobId',                   // [F] rows for the AG Grid console

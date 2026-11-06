@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { api, feePreview, saveJob, savedJobs, toMoney, type JobResponse, type SavedJob } from "../components/api";
+import { api, privateLink, feePreview, saveJob, savedJobs, toMoney, type JobResponse, type SavedJob } from "../components/api";
 
 type Draft = { title: string; amount: string; criteria: string };
 
@@ -42,7 +42,7 @@ function NewJob({ onCreated }: { onCreated: () => void }) {
   const [stages, setStages] = useState<Draft[]>(EXAMPLE);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [made, setMade] = useState<{ jobId: string; clientLink: string } | null>(null);
+  const [made, setMade] = useState<{ jobId: string; clientLink: string; backup: string } | null>(null);
 
   const amounts = useMemo(() => {
     const list = [deposit.trim() ? toMoney(deposit) : null, ...stages.map((s) => toMoney(s.amount))];
@@ -72,7 +72,7 @@ function NewJob({ onCreated }: { onCreated: () => void }) {
       });
       const now = new Date().toISOString();
       saveJob({ jobId: r.job.id, title: r.job.title, role: "freelancer", key: r.freelancerKey, savedAt: now });
-      setMade({ jobId: r.job.id, clientLink: `${window.location.origin}/jobs/${r.job.id}#k=${r.clientKey}&r=client` });
+      setMade({ jobId: r.job.id, clientLink: privateLink(r.job.id, r.clientKey), backup: privateLink(r.job.id, r.freelancerKey) });
       onCreated();
     } catch (e) {
       setErr((e as Error).message);
@@ -127,6 +127,8 @@ function NewJob({ onCreated }: { onCreated: () => void }) {
           <p style={{ margin: "6px 0 0" }}>Send the client this private link. It contains their key, so share it only with them:</p>
           <p className="mono" style={{ margin: "4px 0" }}>{made.clientLink}</p>
           <button onClick={() => navigator.clipboard?.writeText(made.clientLink)}>Copy client link</button>
+          <p style={{ margin: "10px 0 0" }}>Keep your own backup link somewhere private. This browser holds your only key, and this link is how you get back in:</p>
+          <button style={{ marginTop: 4 }} onClick={() => navigator.clipboard?.writeText(made.backup)}>Copy my backup link</button>
         </div>
       )}
     </div>

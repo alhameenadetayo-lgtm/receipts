@@ -31,21 +31,6 @@ export function keyFor(jobId: string, prefer?: Role): SavedJob | undefined {
   return list.find((x) => x.role === prefer) ?? list.find((x) => x.role === "freelancer") ?? list[0];
 }
 
-/**
- * Shared links carry the key in the URL fragment (#k=...&r=client).
- * Fragments never reach any server; we save the key and strip it from the address bar.
- */
-export function absorbFragment(jobId: string): Role | null {
-  if (typeof window === "undefined" || !window.location.hash) return null;
-  const h = new URLSearchParams(window.location.hash.slice(1));
-  const k = h.get("k");
-  const r: Role = h.get("r") === "freelancer" ? "freelancer" : "client";
-  if (!k) return null;
-  saveJob({ jobId, title: "", role: r, key: k, savedAt: new Date().toISOString() });
-  history.replaceState(null, "", window.location.pathname + window.location.search);
-  return r;
-}
-
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -54,6 +39,42 @@ export class ApiError extends Error {
     super(message);
   }
 }
+
+/**
+ * Shared links carry the key in the URL fragment (#k=...), which browsers never send to a server.
+ * A link is only a claim: the key is saved only if the backend accepts it for this job, and the backend's answer
+ * decides the role. So a crafted link can't replace a saved key, and keys can't be recovered if they're lost.
+ * Throws if the backend can't answer yet; the fragment stays, so a reload can try again.
+ */
+export async function absorbFragment(jobId: string): Promise<Role | null> {
+  if (typeof window === "undefined" || !window.location.hash) return null;
+  const k = new URLSearchParams(window.location.hash.slice(1)).get("k");
+  if (!k) return null;
+  const refused = (e: unknown) => e instanceof ApiError && [401, 403, 404].includes(e.status);
+  const clear = () => history.replaceState(null, "", window.location.pathname + window.location.search);
+  let job: JobResponse;
+  try {
+    job = await api<JobResponse>(`/api/jobs/${jobId}`, { key: k });
+  } catch (e) {
+    if (!refused(e)) throw e;
+    clear();
+    return null;
+  }
+  // Only the freelancer's key can read the ledger.
+  let role: Role = "freelancer";
+  try {
+    await api(`/api/ledger?jobId=${encodeURIComponent(jobId)}`, { key: k });
+  } catch (e) {
+    if (!refused(e)) throw e;
+    role = "client";
+  }
+  saveJob({ jobId, title: job.job.title, role, key: k, savedAt: new Date().toISOString() });
+  clear();
+  return role;
+}
+
+/** A link that opens a job with this key: the client's link, or the freelancer's backup. */
+export const privateLink = (jobId: string, key: string) => `${window.location.origin}/jobs/${jobId}#k=${key}`;
 
 export async function api<T>(path: string, opts: { key?: string; method?: string; json?: unknown; form?: FormData } = {}): Promise<T> {
   const headers: Record<string, string> = {};

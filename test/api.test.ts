@@ -212,6 +212,73 @@ test('client agent: within mandate accepts, over the cap is refused and logged',
   assert.ok(auditRows.some((r: any) => r.action === 'accept refused' && r.decision === 'deny'));
 });
 
+test('revoking stops the agent at once, and only the client can do it', async () => {
+  const j = await reserved('11.00');
+  await upload(j.ms.id, j.fk);
+  const m = await call('POST', `/api/jobs/${j.job.id}/mandates`, { key: j.ck, json: { maxAmount: '50.00', days: 7 } });
+  assert.equal((await call('POST', `/api/jobs/${j.job.id}/mandates/revoke`, { key: j.fk })).status, 403);
+  assert.equal((await call('POST', `/api/jobs/${j.job.id}/mandates/revoke`)).status, 401);
+  assert.equal((await call('POST', `/api/jobs/${j.job.id}/mandates/revoke`, { key: m.body.agentKey })).status, 403, 'the agent cannot act as the client');
+  const other = await newJob();
+  assert.equal((await call('POST', `/api/jobs/${j.job.id}/mandates/revoke`, { key: other.ck })).status, 403);
+
+  const r = await call('POST', `/api/jobs/${j.job.id}/mandates/revoke`, { key: j.ck });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.revoked, 1);
+  const refused = await call('POST', `/api/milestones/${j.ms.id}/accept`, { key: m.body.agentKey, json: { by: 'client_agent', mandateId: m.body.mandateId } });
+  assert.equal(refused.status, 403);
+  assert.match(refused.body.error, /revoked/);
+  assert.equal((await call('POST', `/api/jobs/${j.job.id}/mandates/revoke`, { key: j.ck })).body.revoked, 0);
+  assert.equal(pp.calls.filter((c) => c.path.endsWith('/capture')).length, 0, 'no money moved');
+});
+
+test('files can be added only once the money is reserved', async () => {
+  const j = await newJob();
+  assert.equal((await upload(j.ms.id, j.fk)).status, 409);
+  const { rows } = await db.query<any>('SELECT count(*)::int AS n FROM evidence_files');
+  assert.equal(rows[0].n, 0);
+});
+
+test('a stage holds at most 20 files', async () => {
+  const j = await reserved();
+  for (let i = 0; i < 20; i++) assert.equal((await upload(j.ms.id, j.fk, `v${i}`)).status, 201);
+  assert.equal((await upload(j.ms.id, j.fk, 'one more')).status, 409);
+});
+
+test('an oversized request is refused even with no content-length', async () => {
+  const j = await reserved();
+  const huge = (bytes: number) => new ReadableStream({
+    start(c) { c.enqueue(new Uint8Array(bytes)); c.close(); },
+  });
+  const send = (path: string, bytes: number, headers: Record<string, string>) =>
+    handle(new Request(`${APP}${path}`, { method: 'POST', headers, body: huge(bytes), duplex: 'half' } as RequestInit));
+  const file = await send(`/api/milestones/${j.ms.id}/files`, 11 * 1024 * 1024, { authorization: `Bearer ${j.fk}`, 'content-type': 'multipart/form-data; boundary=x' });
+  assert.equal(file.status, 413);
+  assert.equal((await send('/api/jobs', 600 * 1024, { 'content-type': 'application/json' })).status, 413);
+  assert.equal((await send('/api/paypal/webhook', 600 * 1024, { 'content-type': 'application/json' })).status, 413);
+});
+
+test('new jobs are capped per hour and the cap clears', async () => {
+  let t = Date.parse('2026-11-06T10:00:00Z');
+  const h = createHandler({ db: fromPglite(db), paypal: pp.paypal, appUrl: APP, webhookId: null, maxJobsPerHour: 2, now: () => new Date(t) });
+  const make = (bad = false) => h(new Request(`${APP}/api/jobs`, { method: 'POST', body: JSON.stringify(bad ? {} : {
+    title: 'T', clientName: 'A', clientEmail: 'a@example.com', milestones: [{ title: 'S', amount: '11.00', criteria: ['c'] }],
+  }) }));
+  assert.equal((await make(true)).status, 400, 'a refused request does not use the allowance');
+  assert.equal((await make()).status, 201);
+  assert.equal((await make()).status, 201);
+  assert.equal((await make()).status, 429);
+  t += 3_600_001;
+  assert.equal((await make()).status, 201);
+});
+
+test('a forged webhook keeps only a short record', async () => {
+  const res = await handle(new Request(`${APP}/api/paypal/webhook`, { method: 'POST', body: JSON.stringify({ event_type: 'X', pad: 'a'.repeat(50_000) }) }));
+  assert.equal(res.status, 401);
+  const { rows } = await db.query<any>('SELECT length(raw_body) AS n FROM webhook_events');
+  assert.ok(rows[0].n <= 2000);
+});
+
 test('freelancer can void a reservation before acceptance', async () => {
   const j = await reserved();
   const v = await call('POST', `/api/milestones/${j.ms.id}/void`, { key: j.fk });

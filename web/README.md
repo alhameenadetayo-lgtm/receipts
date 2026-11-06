@@ -13,7 +13,7 @@ Next.js app with the screens for Receipts. It only calls the routes in `../lib/c
 
 The browser calls `/api/*` on this app's own address, and Next.js rewrites those calls to the backend (`API_ORIGIN`, default `https://receipts-api-2n1g.onrender.com`). The browser never makes a cross-origin call, so the backend needs no CORS change.
 
-Keys: `createJob` returns a freelancer key and a client key once. The freelancer key is kept in this browser's localStorage. The client key goes in the client link's `#fragment`, which browsers never send to a server; the job page saves it and removes it from the address bar.
+Keys: `createJob` returns a freelancer key and a client key once. The freelancer key is kept in this browser's localStorage, and the job page offers a private backup link. The client key goes in the client link's `#fragment`, which browsers never send to a server. The job page checks a link's key with the backend, which also decides its role, and saves it only if the backend accepts it. So a crafted link can't replace a saved key.
 
 ## Run
 
@@ -27,7 +27,7 @@ Open http://localhost:3000. The free backend sleeps when idle, so the first call
 
 ## Deploy
 
-1. Deploy `web/` as its own Render web service: root directory `web`, build `npm ci && npm run build`, start `npm start`, env `API_ORIGIN=https://receipts-api-2n1g.onrender.com`.
+1. Deploy `web/` as its own Render web service: leave the root directory blank (the app imports `../lib/contract.ts`, and Render hides files outside a root directory), build `cd web && npm ci --include=dev && npm run build`, start `cd web && npm start`, env `NODE_VERSION=24`, `API_ORIGIN=https://receipts-api-2n1g.onrender.com`.
 2. **Set the backend's `APP_URL` to this app's address.** The backend builds PayPal's return link from `APP_URL` (`/api/paypal/return`) and then redirects the client to `APP_URL/jobs/:id`. That page lives here, and the return call reaches the backend through the proxy.
 
 ## The client's agent (demo)
