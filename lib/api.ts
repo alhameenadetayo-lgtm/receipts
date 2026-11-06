@@ -15,6 +15,7 @@ export type Deps = {
   webhookId: string | null;     // PayPal webhook id; without it every webhook is refused
   paypalWebBase?: string;       // where buyers approve; sandbox by default
   now?: () => Date;
+  maxJobsPerHour?: number;
 };
 
 class HttpError extends Error {
@@ -26,6 +27,11 @@ class HttpError extends Error {
 }
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_FILES_PER_STAGE = 20;
+const MAX_STAGE_BYTES = 50 * 1024 * 1024;
+const MAX_JSON_BYTES = 512 * 1024;
+const MAX_REJECTED_WEBHOOK_CHARS = 2000; // anyone can send these, so little of each is kept
+const JOBS_PER_HOUR = 60;                // creating a job needs no key, so the whole server shares this
 const MONEY = /^(?:0|[1-9]\d{0,5})\.\d{2}$/;
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/;
 
@@ -47,9 +53,28 @@ function money(v: unknown, field: string): string {
   return v;
 }
 
+// Stops reading once the limit is passed, so a request with a false or missing content-length can't fill the memory.
+async function readCapped(req: Request, max: number, tooBig: string): Promise<Buffer> {
+  if (!req.body) return Buffer.alloc(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return Buffer.concat(chunks);
+    total += value.length;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      throw new HttpError(413, tooBig);
+    }
+    chunks.push(value);
+  }
+}
+
 async function body(req: Request): Promise<any> {
+  const raw = await readCapped(req, MAX_JSON_BYTES, 'request is too large');
   try {
-    return await req.json();
+    return JSON.parse(raw.toString('utf8'));
   } catch {
     throw new HttpError(400, 'body must be JSON');
   }
@@ -330,9 +355,10 @@ async function uploadFile(d: Deps, req: Request, msId: string) {
   await authJob(d.db.query, req, first.job_id, ['freelancer']);
   const declared = Number(req.headers.get('content-length') ?? 0);
   if (declared > MAX_FILE_BYTES + 64 * 1024) throw new HttpError(413, 'file is larger than 10 MB');
+  const raw = await readCapped(req, MAX_FILE_BYTES + 64 * 1024, 'file is larger than 10 MB');
   let form: FormData;
   try {
-    form = await req.formData();
+    form = await new Response(raw, { headers: { 'content-type': req.headers.get('content-type') ?? '' } }).formData();
   } catch {
     throw new HttpError(400, 'send multipart/form-data with a "file" field');
   }
@@ -349,12 +375,14 @@ async function uploadFile(d: Deps, req: Request, msId: string) {
   await d.db.transaction(async (q) => {
     const ms = await loadMilestone(q, msId, true);
     if (ms.kind === 'deposit') throw new HttpError(409, 'files go on a stage, not the deposit');
-    if (!['draft', 'awaiting_payment', 'approved', 'reserved'].includes(ms.status)) {
-      throw new HttpError(409, `cannot add files while ${ms.status}`);
-    }
+    // Only after the client has reserved the money: a stranger's free job can't be used to store files.
+    if (ms.status !== 'reserved') throw new HttpError(409, `cannot add files while ${ms.status}`);
     if ((await q('SELECT 1 FROM acceptances WHERE milestone_id = $1', [msId])).rows.length) {
       throw new HttpError(409, 'milestone already accepted');
     }
+    const held = (await q('SELECT count(*)::int AS files, coalesce(sum(octet_length(bytes)), 0)::bigint AS bytes FROM evidence_files WHERE milestone_id = $1', [msId])).rows[0];
+    if (held.files >= MAX_FILES_PER_STAGE) throw new HttpError(409, `a stage can hold ${MAX_FILES_PER_STAGE} files`);
+    if (Number(held.bytes) + bytes.length > MAX_STAGE_BYTES) throw new HttpError(409, 'a stage can hold 50 MB of files');
     await q('INSERT INTO evidence_files (id, milestone_id, criterion_id, filename, mime_type, sha256, bytes) VALUES ($1,$2,$3,$4,$5,$6,$7)',
       [id, msId, criterionId, filename, (file.type || 'application/octet-stream').slice(0, 100), sha256, bytes]);
     await q("UPDATE milestones SET review_state = 'delivered' WHERE id = $1", [msId]);
@@ -406,6 +434,18 @@ async function createMandate(d: Deps, req: Request, jobId: string) {
     await audit(q, 'client', 'mandate granted', null, 'approve', `agent may accept milestones up to $${maxAmount} until ${expiresAt.toISOString()}`, { mandateId, jobId });
   });
   return json(201, { mandateId, agentKey, expiresAt: expiresAt.toISOString() });
+}
+
+// Ends every agent permission on the job at once. A leaked or misbehaving agent key stops working immediately.
+async function revokeMandates(d: Deps, req: Request, jobId: string) {
+  await authJob(d.db.query, req, jobId, ['client']);
+  const revoked = await d.db.transaction(async (q) => {
+    const { rows } = await q('UPDATE mandates SET revoked_at = $2 WHERE job_id = $1 AND revoked_at IS NULL RETURNING id',
+      [jobId, d.now?.() ?? new Date()]);
+    if (rows.length) await audit(q, 'client', 'mandates revoked', null, 'deny', `${rows.length} agent permission(s) cancelled`, { jobId });
+    return rows.length;
+  });
+  return json(200, { revoked });
 }
 
 async function accept(d: Deps, req: Request, msId: string) {
@@ -540,7 +580,7 @@ async function resolveEvent(d: Deps, q: Query, type: string, resourceId: string)
 }
 
 async function paypalWebhook(d: Deps, req: Request) {
-  const raw = await req.text();
+  const raw = (await readCapped(req, MAX_JSON_BYTES, 'request is too large')).toString('utf8');
   if (!d.webhookId) return json(503, { error: 'webhook not configured' }); // PayPal retries later
   let event: any;
   try {
@@ -553,7 +593,7 @@ async function paypalWebhook(d: Deps, req: Request) {
     // Kept for the audit trail under a random id, so a forged event can never block the real one's id.
     await d.db.query('INSERT INTO webhook_events (event_id, event_type, resource_id, verified, raw_body, processed_at, outcome) VALUES ($1,$2,$3,false,$4,now(),$5)',
       [newId('rejected'), String(event.event_type ?? '').slice(0, 100), String(event.resource?.id ?? '').slice(0, 100) || null,
-        raw.slice(0, 100_000), `rejected_signature: ${check.reason}`.slice(0, 300)]);
+        raw.slice(0, MAX_REJECTED_WEBHOOK_CHARS), `rejected_signature: ${check.reason}`.slice(0, 300)]);
     return json(401, { error: 'signature not verified' });
   }
   const type = String(event.event_type);
@@ -621,17 +661,26 @@ async function auditRoute(d: Deps, req: Request, url: URL) {
 // ---- router -------------------------------------------------------------------------------------
 
 export function createHandler(deps: Deps) {
+  const jobsCreatedAt: number[] = []; // successful job creations in the last hour
   return async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const p = url.pathname.replace(/\/+$/, '').split('/').slice(1); // ['api', ...]
     const m = req.method;
     try {
       if (p[0] !== 'api') throw new HttpError(404, 'not found');
-      const [, a, id, sub] = p;
+      const [, a, id, sub, step] = p;
       if (a === 'health' && m === 'GET') return json(200, { ok: true });
-      if (a === 'jobs' && !id && m === 'POST') return await createJob(deps, req);
+      if (a === 'jobs' && !id && m === 'POST') {
+        const now = (deps.now?.() ?? new Date()).getTime();
+        while (jobsCreatedAt.length && jobsCreatedAt[0] <= now - 3_600_000) jobsCreatedAt.shift();
+        if (jobsCreatedAt.length >= (deps.maxJobsPerHour ?? JOBS_PER_HOUR)) throw new HttpError(429, 'too many new jobs right now; try again in a while');
+        const res = await createJob(deps, req);
+        jobsCreatedAt.push(now);
+        return res;
+      }
       if (a === 'jobs' && id && !sub && m === 'GET') return await getJob(deps, req, id);
-      if (a === 'jobs' && id && sub === 'mandates' && m === 'POST') return await createMandate(deps, req, id);
+      if (a === 'jobs' && id && sub === 'mandates' && step === 'revoke' && m === 'POST') return await revokeMandates(deps, req, id);
+      if (a === 'jobs' && id && sub === 'mandates' && !step && m === 'POST') return await createMandate(deps, req, id);
       if (a === 'milestones' && id && m === 'POST') {
         if (sub === 'request-payment') return await requestPayment(deps, req, id);
         if (sub === 'files') return await uploadFile(deps, req, id);
