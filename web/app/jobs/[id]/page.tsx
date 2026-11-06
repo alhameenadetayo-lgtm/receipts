@@ -6,7 +6,9 @@ import { pillClass } from "../../../components/status";
 
 const PAYMENT_MSG: Record<string, string> = {
   reserved: "PayPal approved. The money is reserved: set aside for the freelancer, not taken yet.",
-  captured: "PayPal approved. The deposit is paid.",
+  paid: "PayPal approved. The deposit is paid, so the freelancer can start.",
+  not_approved: "PayPal didn't confirm the approval. Try paying again.",
+  cancelled: "Payment cancelled in PayPal. Nothing was charged.",
 };
 
 export default function JobPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ payment?: string; as?: string }> }) {
