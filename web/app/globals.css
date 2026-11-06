@@ -44,3 +44,14 @@ button:disabled { opacity: .5; cursor: default; }
 .err { color: var(--bad); } .ok { color: var(--accent); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
 .grid-h { height: 460px; }
+table.kv { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+table.kv th { text-align: left; vertical-align: top; width: 170px; padding: 6px 10px 6px 0; color: var(--muted); font-weight: 500; }
+table.kv td { padding: 6px 0; border-top: 1px solid var(--line); }
+table.kv tr:first-child td { border-top: 0; }
+table.audit { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.audit td { padding: 4px 8px 4px 0; border-top: 1px solid var(--line); vertical-align: top; }
+@media print {
+  header.top, .noprint { display: none !important; }
+  body { background: #fff; color: #000; }
+  .panel { break-inside: avoid; border-color: #ccc; }
+}

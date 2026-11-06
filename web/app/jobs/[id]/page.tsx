@@ -70,7 +70,7 @@ export default function JobPage({ params, searchParams }: { params: Promise<{ id
       <h1>{data.job.title}</h1>
       <p className="muted">
         {role === "freelancer" ? `For ${data.job.clientName}` : "You are the client"} · {data.milestones.length} payments · <span className="pill">{role}</span>
-        {role === "freelancer" && <> · <a href={`/console?job=${id}`}>Console</a></>}
+        {role === "freelancer" && <> · <a href={`/console?job=${id}`}>Console</a></>} · <a href={`/jobs/${id}/packet`}>Trust Packet</a>
       </p>
       <div className="panel"><ProgressBar milestones={data.milestones} progress={data.progress} /></div>
       {note && <p className="ok">{note}</p>}
