@@ -1,0 +1,95 @@
+"use client";
+import type { JobProgress, LedgerRow, MilestoneView } from "../../lib/contract.ts";
+
+export type Role = "freelancer" | "client";
+export type SavedJob = { jobId: string; title: string; role: Role; key: string; savedAt: string };
+export type Job = { id: string; title: string; clientName: string; clientEmail: string; currency: string; createdAt: string };
+export type JobResponse = { job: Job; milestones: MilestoneView[]; progress: JobProgress };
+export type { LedgerRow, MilestoneView, JobProgress };
+
+// Keys live only in this browser. The backend stores just their sha256, so a lost key can't be recovered.
+const STORE = "receipts.jobs";
+
+export function savedJobs(): SavedJob[] {
+  try {
+    return JSON.parse(localStorage.getItem(STORE) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+export function saveJob(j: SavedJob) {
+  try {
+    const list = savedJobs().filter((x) => !(x.jobId === j.jobId && x.role === j.role));
+    localStorage.setItem(STORE, JSON.stringify([j, ...list]));
+  } catch {}
+}
+
+/** Picks the key for a job: the preferred role if saved, else freelancer, else client. */
+export function keyFor(jobId: string, prefer?: Role): SavedJob | undefined {
+  const list = savedJobs().filter((x) => x.jobId === jobId);
+  return list.find((x) => x.role === prefer) ?? list.find((x) => x.role === "freelancer") ?? list[0];
+}
+
+/**
+ * Shared links carry the key in the URL fragment (#k=...&r=client).
+ * Fragments never reach any server; we save the key and strip it from the address bar.
+ */
+export function absorbFragment(jobId: string): Role | null {
+  if (typeof window === "undefined" || !window.location.hash) return null;
+  const h = new URLSearchParams(window.location.hash.slice(1));
+  const k = h.get("k");
+  const r: Role = h.get("r") === "freelancer" ? "freelancer" : "client";
+  if (!k) return null;
+  saveJob({ jobId, title: "", role: r, key: k, savedAt: new Date().toISOString() });
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+  return r;
+}
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export async function api<T>(path: string, opts: { key?: string; method?: string; json?: unknown; form?: FormData } = {}): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (opts.key) headers.Authorization = `Bearer ${opts.key}`;
+  if (opts.json !== undefined) headers["Content-Type"] = "application/json";
+  let r: Response;
+  try {
+    r = await fetch(path, {
+      method: opts.method ?? (opts.json !== undefined || opts.form ? "POST" : "GET"),
+      headers,
+      body: opts.form ?? (opts.json !== undefined ? JSON.stringify(opts.json) : undefined),
+    });
+  } catch {
+    throw new ApiError(0, "Can't reach the server. It may be waking up, so try again in a minute.");
+  }
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(r.status, (body as { error?: string }).error ?? `Request failed (${r.status})`);
+  return body as T;
+}
+
+/** Money strings to cents without floats. */
+export const cents = (s: string) => Number(s.replace(".", ""));
+export const fromCents = (c: number) => `${Math.floor(c / 100)}.${String(c % 100).padStart(2, "0")}`;
+
+/** "200" / "200.5" / "$200.50" -> "200.50"; null if not a valid amount. */
+export function toMoney(input: string): string | null {
+  const t = input.trim().replace(/^\$/, "");
+  if (!/^\d{1,6}(\.\d{1,2})?$/.test(t)) return null;
+  const [a, b = ""] = t.split(".");
+  const v = `${String(Number(a))}.${(b + "00").slice(0, 2)}`;
+  return cents(v) > 0 ? v : null;
+}
+
+/** Fee preview from PayPal's published Nigeria rate (4.90% + $0.30 per payment). A preview, not PayPal's number. */
+export function feePreview(amounts: string[]) {
+  const fee = amounts.reduce((n, a) => n + Math.round((cents(a) * 490) / 10000) + 30, 0);
+  const gross = amounts.reduce((n, a) => n + cents(a), 0);
+  return { gross: fromCents(gross), fee: fromCents(fee), net: fromCents(Math.max(0, gross - fee)) };
+}
