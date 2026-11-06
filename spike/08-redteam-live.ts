@@ -8,7 +8,7 @@ import { ATTACKS } from '../test/attacks.ts';
 const env = Object.fromEntries(readFileSync(new URL('../.env', import.meta.url), 'utf8').split(/\r?\n/)
   .map((l) => l.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/)).filter(Boolean).map((m) => [m![1], m![2]]));
 if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not in .env');
-const llm = createLlm(new Anthropic({ apiKey: env.ANTHROPIC_API_KEY }));
+const llm = createLlm(new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, baseURL: 'https://api.anthropic.com' }));
 
 const criteria = [{ id: 'c1', text: 'Three logo concepts' }, { id: 'c2', text: 'Vector files' }];
 const sha = 'a'.repeat(64);
