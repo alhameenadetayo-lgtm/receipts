@@ -2,8 +2,9 @@
 // Works under Next.js (app/api/[...path]/route.ts) or the plain Node server in server.ts.
 // Money moves only through PayPal; each PayPal POST carries a fixed request id so retries never act twice.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { STATUS_LABEL, type JobProgress, type LedgerRow, type MilestoneStatus, type MilestoneView } from './contract.ts';
+import { STATUS_LABEL, type BuyerFields, type DefenceDraft, type DefenceStatus, type DefenceVerdict, type JobProgress, type LedgerRow, type MilestoneStatus, type MilestoneView } from './contract.ts';
 import type { Db, Query } from './db.ts';
+import { MODELS, checkRules, denied, draftResponse, readUntrusted, secondKey, type JobRecord, type Llm, type ProposedAction } from './defence.ts';
 import { applyEvent, canTransition, reservationState } from './ledger.ts';
 import { PaypalError, type Paypal } from './paypal.ts';
 import { verifyWebhook } from './webhook.ts';
@@ -14,6 +15,7 @@ export type Deps = {
   appUrl: string;               // public https origin, e.g. https://receipts.onrender.com
   webhookId: string | null;     // PayPal webhook id; without it every webhook is refused
   paypalWebBase?: string;       // where buyers approve; sandbox by default
+  llm?: Llm | null;             // AI dispute defence; without it those routes answer 503
   now?: () => Date;
 };
 
@@ -584,6 +586,200 @@ async function paypalWebhook(d: Deps, req: Request) {
   }
 }
 
+// ---- AI dispute defence ---------------------------------------------------------------------------
+
+const MAX_ATTEMPTS = 3; // per dispute, so a leaked key cannot run up the AI bill
+const ATTACHABLE: Record<string, string> = { 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/png': 'png', 'application/pdf': 'pdf' }; // what PayPal takes
+const MAX_EVIDENCE_BYTES = 50 * 1024 * 1024;
+const MAX_FILED_NOTE = 2000;
+
+async function auditModel(q: Query, actor: string, action: string, milestoneId: string, decision: string, reason: string, model: string | null, detail: unknown = null) {
+  await q('INSERT INTO audit_log (actor, action, milestone_id, decision, reason, model, detail) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+    [actor, action, milestoneId, decision, reason, model, detail === null ? null : JSON.stringify(detail)]);
+}
+
+// Everything in a PayPal dispute that the buyer wrote. It goes to the reader and nowhere else, and is not stored.
+function buyerTexts(dp: any): string[] {
+  const texts = [
+    ...(dp.messages ?? []).filter((m: any) => m.posted_by === 'BUYER').map((m: any) => m.content),
+    ...(dp.evidences ?? []).filter((e: any) => e.source === 'SUBMITTED_BY_BUYER').map((e: any) => e.notes),
+    ...(dp.disputed_transactions ?? []).flatMap((t: any) => (t.items ?? []).flatMap((i: any) => [i.item_description, i.notes])),
+  ];
+  return texts.filter((t) => typeof t === 'string' && t.trim());
+}
+
+const CODE = /^[A-Z_]{1,60}$/;
+const canEvidence = (dp: any) => (dp.links ?? []).some((l: any) => l.rel === 'provide_evidence');
+
+// The structured record the drafter and the second key work from. It holds no free text from outside:
+// no client notes, no file names, no buyer words. PayPal's own codes are checked before they go in.
+async function jobRecord(q: Query, ms: any, dp: any, buyerFields: BuyerFields): Promise<JobRecord> {
+  const job = (await q('SELECT title FROM jobs WHERE id = $1', [ms.job_id])).rows[0];
+  const cap = (await q('SELECT id, gross, status FROM captures WHERE milestone_id = $1', [ms.id])).rows[0];
+  const acc = (await q('SELECT accepted_by, accepted_at, mandate_id, file_hashes FROM acceptances WHERE milestone_id = $1', [ms.id])).rows[0];
+  const files = (await q('SELECT id, sha256, criterion_id, uploaded_at FROM evidence_files WHERE milestone_id = $1 ORDER BY uploaded_at', [ms.id])).rows;
+  const changes = (await q('SELECT round, criterion_id, created_at FROM change_requests WHERE milestone_id = $1 ORDER BY round', [ms.id])).rows;
+  return {
+    job: { title: job.title },
+    milestone: { id: ms.id, title: ms.title, kind: ms.kind, amount: ms.amount, criteria: ms.criteria, revisionRoundsUsed: ms.revision_round, revisionRoundsAgreed: ms.max_revisions },
+    capture: cap ? { id: cap.id, gross: cap.gross, status: cap.status } : null,
+    acceptance: acc ? { by: acc.accepted_by, at: iso(acc.accepted_at)!, underMandate: !!acc.mandate_id, fileHashes: acc.file_hashes } : null,
+    files: files.map((f: any) => ({ id: f.id, sha256: f.sha256, criterionId: f.criterion_id, uploadedAt: iso(f.uploaded_at)! })),
+    changeRequests: changes.map((c: any) => ({ round: c.round, criterionId: c.criterion_id, at: iso(c.created_at)! })),
+    dispute: {
+      id: dp.dispute_id,
+      reason: CODE.test(dp.reason ?? '') ? dp.reason : 'OTHER',
+      stage: CODE.test(dp.dispute_life_cycle_stage ?? '') ? dp.dispute_life_cycle_stage : 'UNKNOWN',
+      amount: String(dp.dispute_amount?.value ?? ''),
+      currency: String(dp.dispute_amount?.currency_code ?? ''),
+      respondBy: iso(dp.seller_response_due_date),
+      requestedEvidence: (dp.evidences ?? []).filter((e: any) => e.source === 'REQUESTED_FROM_SELLER' && CODE.test(e.evidence_type ?? '')).map((e: any) => e.evidence_type),
+      canProvideEvidence: canEvidence(dp),
+      disputedCaptureId: dp.disputed_transactions?.[0]?.seller_transaction_id ?? null,
+      buyerFields,
+    },
+  };
+}
+
+async function draftView(q: Query, r: any): Promise<DefenceDraft> {
+  const ids: string[] = r.cited_file_ids ?? [];
+  const files = ids.length ? (await q('SELECT id, filename, sha256 FROM evidence_files WHERE id = ANY($1)', [ids])).rows : [];
+  return {
+    id: r.id, disputeId: r.dispute_id, status: r.status, evidenceType: r.evidence_type, notes: r.notes,
+    citedFiles: files.map((f: any) => ({ id: f.id, filename: f.filename, sha256: f.sha256 })),
+    buyerFields: r.buyer_fields, verdict: r.verdict, createdAt: iso(r.created_at)!, decidedAt: iso(r.decided_at),
+  };
+}
+
+async function defenceDispute(q: Query, msId: string) {
+  return (await q('SELECT * FROM disputes WHERE milestone_id = $1 ORDER BY updated_at DESC LIMIT 1', [msId])).rows[0] ?? null;
+}
+
+async function defenceState(q: Query, disputeId: string | null) {
+  if (!disputeId) return { draft: null, attemptsLeft: 0 };
+  const { rows } = await q('SELECT * FROM dispute_drafts WHERE dispute_id = $1 ORDER BY created_at DESC', [disputeId]);
+  return { draft: rows[0] ? await draftView(q, rows[0]) : null, attemptsLeft: Math.max(0, MAX_ATTEMPTS - rows.length) };
+}
+
+async function getDefence(d: Deps, req: Request, msId: string) {
+  const ms = await loadMilestone(d.db.query, msId);
+  await authJob(d.db.query, req, ms.job_id, ['freelancer']);
+  return json(200, await defenceState(d.db.query, (await defenceDispute(d.db.query, msId))?.id ?? null));
+}
+
+async function draftDefence(d: Deps, req: Request, msId: string) {
+  const ms = await loadMilestone(d.db.query, msId);
+  await authJob(d.db.query, req, ms.job_id, ['freelancer']);
+  if (!d.llm) throw new HttpError(503, 'the AI is not set up yet');
+  const row = await defenceDispute(d.db.query, msId);
+  if (!row) throw new HttpError(409, 'there is no dispute on this milestone');
+  const state = await defenceState(d.db.query, row.id);
+  if (state.draft?.status === 'filed') throw new HttpError(409, 'evidence was already filed on this dispute');
+  if (state.draft?.status === 'ready') return json(200, state); // already waiting for the tap: spends nothing
+  if (state.attemptsLeft === 0) throw new HttpError(409, `all ${MAX_ATTEMPTS} attempts on this dispute are used; answer it directly in PayPal`);
+
+  // No database transaction is held while the models run.
+  const dp = await d.paypal.call('GET', `/v1/customer/disputes/${encodeURIComponent(row.id)}`);
+  const id = newId('dft');
+  const now = d.now?.() ?? new Date();
+  let fields: BuyerFields | null = null;
+  let action: ProposedAction | null = null;
+  let verdict: DefenceVerdict;
+  const log: [string, string, string, string, string | null][] = [];
+  try {
+    fields = await readUntrusted(d.llm, buyerTexts(dp), ms.criteria);
+    log.push(['haiku', 'read the buyer\'s text into fixed fields', 'n/a', `complaint ${fields.complaint}; instructions to AI: ${fields.containsInstructionsToAi}`, MODELS.reader]);
+    const record = await jobRecord(d.db.query, ms, dp, fields);
+    action = await draftResponse(d.llm, record);
+    log.push(['sonnet', 'drafted an evidence note', 'n/a', `${action.evidenceType}, ${action.citedFileIds.length} file(s) cited`, MODELS.drafter]);
+    const broken = checkRules(action, record, now);
+    if (broken.length) {
+      verdict = denied(`Stopped by the rules: ${broken.join('; ')}.`, 'rules');
+      log.push(['system', 'rules check', 'deny', broken.join('; '), null]);
+    } else {
+      verdict = await secondKey(d.llm, action, record);
+      log.push(['opus_second_key', 'reviewed the proposed filing', verdict.decision, verdict.reason, MODELS.second_key]);
+    }
+  } catch (e) {
+    console.error(e);
+    verdict = denied('The AI could not finish, so nothing can be filed from this attempt.', 'system');
+    log.push(['system', 'AI failure', 'deny', e instanceof Error ? e.message.slice(0, 300) : 'error', null]);
+  }
+  const status: DefenceStatus = verdict.decision === 'approve' ? 'ready' : verdict.decision === 'escalate' ? 'escalated' : 'denied';
+  const out = await d.db.transaction(async (q) => {
+    await q('INSERT INTO dispute_drafts (id, dispute_id, milestone_id, status, evidence_type, notes, cited_file_ids, buyer_fields, verdict) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+      [id, row.id, msId, status, action?.evidenceType ?? null, action?.notes ?? null, JSON.stringify(action?.citedFileIds ?? []), fields && JSON.stringify(fields), JSON.stringify(verdict)]);
+    if (fields) await q('UPDATE disputes SET buyer_text_fields = $2 WHERE id = $1', [row.id, JSON.stringify(fields)]);
+    for (const [actor, what, decision, reason, model] of log) await auditModel(q, actor, what, msId, decision, reason, model, { draftId: id });
+    return defenceState(q, row.id);
+  });
+  return json(201, out);
+}
+
+// The person's tap. Everything is checked again here: the draft could be days old by now.
+async function fileDefence(d: Deps, req: Request, msId: string) {
+  const first = await loadMilestone(d.db.query, msId);
+  await authJob(d.db.query, req, first.job_id, ['freelancer']);
+  const { draftId } = await body(req);
+  const result = await d.db.transaction(async (q) => {
+    const r = (await q('SELECT * FROM dispute_drafts WHERE id = $1 AND milestone_id = $2 FOR UPDATE', [String(draftId), msId])).rows[0];
+    if (!r) throw new HttpError(404, 'draft not found');
+    if (r.status === 'filed') return { draft: await draftView(q, r) }; // repeated tap: nothing to do
+    if (r.status !== 'ready') throw new HttpError(409, `this draft cannot be filed (${r.status})`);
+    const dp = await d.paypal.call('GET', `/v1/customer/disputes/${encodeURIComponent(r.dispute_id)}`);
+    if (!canEvidence(dp)) throw new HttpError(409, 'PayPal is not accepting evidence on this dispute now');
+    const acc = (await q('SELECT file_hashes FROM acceptances WHERE milestone_id = $1', [msId])).rows[0];
+    const files = r.cited_file_ids.length ? (await q('SELECT id, mime_type, sha256, bytes FROM evidence_files WHERE id = ANY($1) AND milestone_id = $2', [r.cited_file_ids, msId])).rows : [];
+    const stored = new Set<string>(acc?.file_hashes ?? []);
+    const swapped = files.length !== r.cited_file_ids.length
+      || files.some((f: any) => !stored.has(f.sha256) || createHash('sha256').update(Buffer.from(f.bytes)).digest('hex') !== f.sha256);
+    if (swapped) {
+      await q("UPDATE dispute_drafts SET status = 'denied', decided_at = now(), verdict = $2 WHERE id = $1",
+        [r.id, JSON.stringify(denied('A cited file no longer matches what the client accepted.', 'rules'))]);
+      await auditModel(q, 'system', 'filing refused', msId, 'deny', 'a cited file no longer matches what the client accepted', null, { draftId: r.id });
+      return { draft: await draftView(q, (await q('SELECT * FROM dispute_drafts WHERE id = $1', [r.id])).rows[0]), refused: true };
+    }
+    const form = new FormData();
+    let bytes = 0;
+    const notAttached: string[] = [];
+    for (const f of files) {
+      const ext = ATTACHABLE[f.mime_type];
+      const b = Buffer.from(f.bytes);
+      if (!ext || bytes + b.length > MAX_EVIDENCE_BYTES) { notAttached.push(f.sha256); continue; }
+      bytes += b.length;
+      // Named by fingerprint: the original file name is untrusted text.
+      form.append(`evidence_file_${f.sha256.slice(0, 8)}`, new Blob([b], { type: f.mime_type }), `delivery-${f.sha256.slice(0, 12)}.${ext}`);
+    }
+    let notes: string = r.notes;
+    for (const sha of notAttached) {
+      const line = `\nDelivered and accepted file, SHA-256 ${sha}.`;
+      if (notes.length + line.length <= MAX_FILED_NOTE) notes += line;
+    }
+    form.append('input', new Blob([JSON.stringify({ evidences: [{ evidence_type: r.evidence_type, notes }] })], { type: 'application/json' }));
+    await d.paypal.postForm(`/v1/customer/disputes/${encodeURIComponent(r.dispute_id)}/provide-evidence`, form, `evidence-${r.id}`);
+    await q("UPDATE dispute_drafts SET status = 'filed', decided_at = now() WHERE id = $1", [r.id]);
+    await auditModel(q, 'freelancer', 'evidence filed with PayPal', msId, 'approve', `${files.length - notAttached.length} file(s) attached`, null, { draftId: r.id, disputeId: r.dispute_id });
+    return { draft: await draftView(q, (await q('SELECT * FROM dispute_drafts WHERE id = $1', [r.id])).rows[0]) };
+  });
+  if ('refused' in result) return json(409, { error: 'a cited file no longer matches what the client accepted', draft: result.draft });
+  return json(200, result);
+}
+
+async function rejectDefence(d: Deps, req: Request, msId: string) {
+  const first = await loadMilestone(d.db.query, msId);
+  await authJob(d.db.query, req, first.job_id, ['freelancer']);
+  const { draftId } = await body(req);
+  const draft = await d.db.transaction(async (q) => {
+    const r = (await q('SELECT * FROM dispute_drafts WHERE id = $1 AND milestone_id = $2 FOR UPDATE', [String(draftId), msId])).rows[0];
+    if (!r) throw new HttpError(404, 'draft not found');
+    if (r.status !== 'ready' && r.status !== 'escalated') throw new HttpError(409, `this draft cannot be rejected (${r.status})`);
+    await q("UPDATE dispute_drafts SET status = 'rejected', decided_at = now() WHERE id = $1", [r.id]);
+    await auditModel(q, 'freelancer', 'draft rejected', msId, 'deny', 'turned down by the freelancer', null, { draftId: r.id });
+    return draftView(q, (await q('SELECT * FROM dispute_drafts WHERE id = $1', [r.id])).rows[0]);
+  });
+  return json(200, { draft });
+}
+
 // ---- console ------------------------------------------------------------------------------------
 
 async function ledger(d: Deps, req: Request, url: URL) {
@@ -627,8 +823,14 @@ export function createHandler(deps: Deps) {
     const m = req.method;
     try {
       if (p[0] !== 'api') throw new HttpError(404, 'not found');
-      const [, a, id, sub] = p;
+      const [, a, id, sub, step] = p;
       if (a === 'health' && m === 'GET') return json(200, { ok: true });
+      if (a === 'milestones' && id && sub === 'defence') {
+        if (!step && m === 'GET') return await getDefence(deps, req, id);
+        if (!step && m === 'POST') return await draftDefence(deps, req, id);
+        if (step === 'file' && m === 'POST') return await fileDefence(deps, req, id);
+        if (step === 'reject' && m === 'POST') return await rejectDefence(deps, req, id);
+      }
       if (a === 'jobs' && !id && m === 'POST') return await createJob(deps, req);
       if (a === 'jobs' && id && !sub && m === 'GET') return await getJob(deps, req, id);
       if (a === 'jobs' && id && sub === 'mandates' && m === 'POST') return await createMandate(deps, req, id);

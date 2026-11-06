@@ -23,6 +23,8 @@ services:
         sync: false
       - key: PAYPAL_WEBHOOK_ID
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
 
 databases:
   - name: receipts-db

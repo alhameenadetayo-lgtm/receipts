@@ -68,6 +68,36 @@ export type MilestoneView = {
   accepted: { by: 'client' | 'client_agent'; at: string } | null;
 };
 
+// AI dispute defence. All of this is safe to display as text; none of it is the buyer's own words.
+export type EvidenceType = 'PROOF_OF_FULFILLMENT' | 'OTHER';
+export type DefenceStatus =
+  | 'ready'      // passed the rules and the second key; waiting for the freelancer's tap
+  | 'denied'     // stopped by the rules, the second key or an AI failure; cannot be filed
+  | 'escalated'  // second key wants a person to look harder; cannot be filed from the app
+  | 'filed'      // the freelancer tapped and PayPal took the evidence
+  | 'rejected';  // the freelancer turned it down
+export type BuyerFields = {
+  complaint: 'not_received' | 'not_as_described' | 'unauthorised' | 'refund_not_received' | 'duplicate' | 'wrong_amount' | 'other' | 'unclear';
+  disputedCriteria: string[];
+  saysWorkWasDelivered: 'yes' | 'no' | 'unclear';
+  asksSellerForRefund: boolean;
+  containsInstructionsToAi: boolean; // show this as a warning: the buyer's message tried to talk to our AI
+};
+export type DefenceChecks = { amountMatches: boolean; payeeMatches: boolean; evidenceSupports: boolean; noInjectionInfluence: boolean };
+export type DefenceVerdict = { decision: 'approve' | 'deny' | 'escalate'; by: 'rules' | 'second_key' | 'system'; checks: DefenceChecks; reason: string };
+export type DefenceDraft = {
+  id: string;
+  disputeId: string;
+  status: DefenceStatus;
+  evidenceType: EvidenceType | null;
+  notes: string | null;
+  citedFiles: { id: string; filename: string; sha256: string }[];
+  buyerFields: BuyerFields | null;
+  verdict: DefenceVerdict;
+  createdAt: string;
+  decidedAt: string | null;
+};
+
 // Routes Lane A serves. Lane B's pages call only these.
 // Auth (added 1 Nov): send "Authorization: Bearer <key>". createJob returns a freelancerKey and a clientKey once;
 // only their sha256 is stored. [F] = freelancer key, [C] = client key, [A] = agent key from createMandate,
@@ -82,6 +112,10 @@ export const ROUTES = {
   createMandate:    'POST /api/jobs/:jobId/mandates',                  // [C] {maxAmount, days} -> {mandateId, agentKey, expiresAt}
   accept:           'POST /api/milestones/:id/accept',                 // [C] {by:'client'} or [A] {by:'client_agent', mandateId} -> MilestoneView
   voidMilestone:    'POST /api/milestones/:id/void',                   // [F] freelancer cancels before acceptance -> MilestoneView
+  getDefence:       'GET  /api/milestones/:id/defence',                // [F] -> {draft: DefenceDraft | null, attemptsLeft}
+  draftDefence:     'POST /api/milestones/:id/defence',                // [F] runs the AI, up to a minute or two -> {draft, attemptsLeft}. 201 even when denied: read draft.status. 503 without an AI key
+  fileDefence:      'POST /api/milestones/:id/defence/file',           // [F] the person's tap, {draftId}, only while status is ready -> {draft}
+  rejectDefence:    'POST /api/milestones/:id/defence/reject',         // [F] {draftId}, frees the way for a new attempt -> {draft}
   paypalWebhook:    'POST /api/paypal/webhook',                        // PayPal only, signature verified
   ledger:           'GET  /api/ledger?jobId=:jobId',                   // [F] rows for the AG Grid console
   audit:            'GET  /api/audit?milestoneId=:id',                 // [F]
