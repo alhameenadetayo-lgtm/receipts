@@ -107,7 +107,13 @@ function Console() {
     [],
   );
 
-  if (!jobs.length) return <p className="muted">No jobs on this device yet. <a href="/">Create one</a> as the freelancer to see its ledger.</p>;
+  if (!jobs.length)
+    return (
+      <p className="muted">
+        No freelancer jobs in this browser. The console is for the freelancer: open it in the browser where you created the job, or open your
+        backup link here first. Clients can&apos;t see the ledger. <a href="/">Create a job</a>
+      </p>
+    );
 
   return (
     <>

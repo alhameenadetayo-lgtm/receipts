@@ -112,6 +112,16 @@ function Milestone({ m, role, keyValue, act }: { m: MilestoneView; role: Role; k
   const link = m.approveUrl ?? approveUrl;
   const roundsLeft = m.maxRevisions - m.revisionRound;
   const canPayRequest = ["draft", "approval_reversed", "voided", "expired"].includes(m.status);
+  // Auto-match a delivery to a criterion so the client never sees "no file yet" next to delivered work:
+  // the criterion the client asked to change, else the only one, else the first one still without a file.
+  const lastChange = m.changeRequests[m.changeRequests.length - 1];
+  const suggested =
+    (m.reviewState === "changes_requested" && lastChange && m.criteria.some((c) => c.id === lastChange.criterionId) ? lastChange.criterionId : null) ??
+    (m.criteria.length === 1 ? m.criteria[0].id : null) ??
+    m.criteria.find((c) => !m.files.some((f) => f.criterionId === c.id))?.id ??
+    m.criteria[0]?.id ??
+    "none";
+  const chosen = crit || suggested;
 
   return (
     <div className="ms">
@@ -172,15 +182,17 @@ function Milestone({ m, role, keyValue, act }: { m: MilestoneView; role: Role; k
           {m.kind === "stage" && m.status === "reserved" && (
             <div className="row" style={{ marginTop: 6 }}>
               <input type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} style={{ maxWidth: 260 }} />
-              <select value={crit} onChange={(e) => setCrit(e.target.value)} style={{ maxWidth: 260 }}>
-                <option value="">Match to a criterion…</option>
-                {m.criteria.map((c) => <option key={c.id} value={c.id}>{c.text}</option>)}
+              <select value={chosen} onChange={(e) => setCrit(e.target.value)} style={{ maxWidth: 260 }} aria-label="Criterion this file is for">
+                {m.criteria.map((c) => <option key={c.id} value={c.id}>For: {c.text}</option>)}
+                <option value="none">Not for a specific criterion</option>
               </select>
               <button className="primary" disabled={!file} onClick={() => act(async () => {
                 const fd = new FormData();
                 fd.append("file", file!);
-                if (crit) fd.append("criterionId", crit);
+                if (chosen !== "none") fd.append("criterionId", chosen);
                 await api(`/api/milestones/${m.id}/files`, { key: keyValue, form: fd });
+                setFile(null);
+                setCrit("");
               }, "Delivered. The file is fingerprinted and the client can review it.")}>
                 {m.reviewState === "changes_requested" ? "Resubmit" : "Deliver"}
               </button>
