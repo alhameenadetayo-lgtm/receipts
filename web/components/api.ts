@@ -108,9 +108,15 @@ export function toMoney(input: string): string | null {
   return cents(v) > 0 ? v : null;
 }
 
-/** Fee preview from PayPal's published Nigeria rate (4.90% + $0.30 per payment). A preview, not PayPal's number. */
-export function feePreview(amounts: string[]) {
-  const fee = amounts.reduce((n, a) => n + Math.round((cents(a) * 490) / 10000) + 30, 0);
+/**
+ * Fee preview, a preview and not PayPal's number. Two rates, both PayPal's own:
+ * - NG: receiving from abroad into a Nigerian account, PayPal NG merchant fees page (4.90% + $0.30).
+ * - SANDBOX: what the US sandbox business account is actually charged in testing (2.90% + $0.30).
+ */
+export const FEE_RATES = { NG: { bps: 490, fixedCents: 30, label: "4.90% + $0.30" }, SANDBOX: { bps: 290, fixedCents: 30, label: "2.90% + $0.30" } } as const;
+
+export function feePreview(amounts: string[], rate: { bps: number; fixedCents: number } = FEE_RATES.NG) {
+  const fee = amounts.reduce((n, a) => n + Math.round((cents(a) * rate.bps) / 10000) + rate.fixedCents, 0);
   const gross = amounts.reduce((n, a) => n + cents(a), 0);
   return { gross: fromCents(gross), fee: fromCents(fee), net: fromCents(Math.max(0, gross - fee)) };
 }
