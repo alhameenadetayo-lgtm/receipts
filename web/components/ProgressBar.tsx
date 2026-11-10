@@ -21,7 +21,7 @@ export function ProgressBar({ milestones, progress }: { milestones: MilestoneVie
         ))}
       </div>
       <p className="muted" style={{ margin: "6px 0 0" }}>
-        ${progress.paid} of ${progress.total} paid ({progress.percentPaid}%) · ${progress.reserved} reserved · {progress.stagesPaid} of {progress.stages} stages paid
+        ${progress.paid} of ${progress.total} paid ({progress.percentPaid}%) · ${progress.reserved} reserved · {progress.stagesPaid} of {progress.stages} payments made
       </p>
     </div>
   );

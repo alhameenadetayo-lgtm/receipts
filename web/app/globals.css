@@ -157,6 +157,10 @@ table.audit td { padding: 6px 10px 6px 0; border-top: 1px solid var(--line); ver
 @media (max-width: 560px) {
   .panel { padding: 16px; }
   table.kv th { width: 110px; }
+  /* Audit rows stack on a phone: time and who on one line, what happened and why underneath. */
+  table.audit tr { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; border-top: 1px solid var(--line); padding: 6px 0; }
+  table.audit td { border-top: 0; padding: 0; overflow-wrap: anywhere; }
+  table.audit td:nth-child(n + 3) { grid-column: 1 / -1; }
   header.top nav { gap: 14px; }
 }
 
