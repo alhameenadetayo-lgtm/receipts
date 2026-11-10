@@ -134,19 +134,43 @@ table.audit td { padding: 6px 10px 6px 0; border-top: 1px solid var(--line); ver
 .chain > li::before { content: ""; position: absolute; left: 9px; top: 0; bottom: 0; width: 2px; background: var(--line); }
 .chain > li:first-child::before { top: 20px; }
 .chain > li:last-child::before { bottom: calc(100% - 20px); }
-.chain .dot { position: absolute; left: 2px; top: 13px; width: 16px; height: 16px; border-radius: 50%; background: var(--panel); border: 2px solid var(--line-strong); }
+.chain .dot { position: absolute; left: 0; top: 12px; width: 20px; height: 20px; border-radius: 50%; background: var(--panel); border: 2px solid var(--line-strong); display: grid; place-items: center; color: var(--panel); font: 700 12px/1 var(--font); }
 .chain .pass .dot { background: var(--paid); border-color: var(--paid); }
+.chain .pass .dot::after { content: ""; width: 5px; height: 9px; margin-top: -2px; border: solid var(--panel); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .chain .stop .dot { background: var(--bad); border-color: var(--bad); }
+.chain .stop .dot::after { content: "\00d7"; font-size: 15px; }
 .chain .wait .dot { background: var(--warn); border-color: var(--warn); }
+.chain .wait .dot::after { content: "!"; }
 .chain .you .dot { border-color: var(--ink); border-width: 3px; }
+.chain .you .dot::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ink); }
+.chain > li.pass::before { background: var(--paid); }
+.defence-ref { margin-top: 8px !important; font-size: 12.5px !important; }
+.defence-ref span { font-family: var(--mono); color: var(--ink-soft); }
+
+/* The drafted note reads as the document it is: what PayPal will receive, with the file it cites. */
+.evidence { max-width: 780px; margin: 8px 0 2px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel); overflow: hidden; }
+.evidence figcaption { display: flex; justify-content: space-between; gap: 12px; padding: 8px 14px; font-size: 12.5px; font-weight: 650; color: var(--ink-soft); background: var(--bg); border-bottom: 1px solid var(--line); }
+.evidence figcaption .muted { font-weight: 500; }
+.evidence p { margin: 0; padding: 14px 16px; max-width: 70ch; font-size: 15px; line-height: 1.65; }
+.evidence .file { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 10px 14px 10px 38px; border-top: 1px dashed var(--line-strong); font-size: 13.5px; position: relative; }
+.evidence .file::before { content: ""; position: absolute; left: 15px; top: 50%; width: 12px; height: 15px; margin-top: -8px; border: 1.5px solid var(--ink-soft); border-radius: 2px 5px 2px 2px; }
+.evidence .file-name { font-weight: 600; }
+.evidence .file-hash { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.ticks { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; padding: 0; list-style: none; }
+.ticks li { font-size: 13px; font-weight: 550; padding: 3px 10px; border-radius: 99px; background: var(--paid-tint); color: var(--paid); }
+.verdict { margin: 10px 0 0; padding-left: 12px; border-left: 2px solid var(--line-strong); color: var(--ink-soft); font-size: 14px; }
 .chain .step-title { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-weight: 650; }
 .chain .step-who { font-weight: 500; color: var(--muted); font-size: 13.5px; }
 .chain .step-body { margin-top: 6px; font-size: 14.5px; }
 .chain .step-body ul { margin: 4px 0; padding-left: 18px; }
 .chain .quote { white-space: pre-wrap; padding: 12px 14px; border-left: 3px solid var(--ink); background: var(--bg); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; margin: 6px 0; line-height: 1.6; }
 .chain .alert { margin: 8px 0 2px; padding: 9px 12px; border-radius: var(--radius-sm); background: var(--warn-tint); color: var(--warn); font-size: 14px; font-weight: 550; }
-.checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 4px 16px; margin: 6px 0; padding: 0; list-style: none; }
-.checks li { display: flex; gap: 8px; align-items: baseline; }
+.checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
+.checks li { display: flex; gap: 10px; align-items: center; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: 14px; }
+.checks li::before { flex: none; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; font-size: 11px; font-weight: 800; color: var(--panel); }
+.checks li.yes::before { content: "\2713"; background: var(--paid); }
+.checks li.no::before { content: "\00d7"; background: var(--bad); font-size: 14px; }
+.checks li.no { border-color: var(--bad); }
 .defence-foot { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 14px 18px 16px; border-top: 1px solid var(--line); background: var(--bg); }
 .defence-foot .hint { flex: 1; min-width: 200px; margin: 0; color: var(--muted); font-size: 13.5px; }
 .working { display: inline-flex; align-items: center; gap: 10px; color: var(--ink-soft); font-weight: 550; }
@@ -157,6 +181,7 @@ table.audit td { padding: 6px 10px 6px 0; border-top: 1px solid var(--line); ver
 @media (max-width: 560px) {
   .panel { padding: 16px; }
   table.kv th { width: 110px; }
+  .checks { grid-template-columns: 1fr; }
   /* Audit rows stack on a phone: time and who on one line, what happened and why underneath. */
   table.audit tr { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; border-top: 1px solid var(--line); padding: 6px 0; }
   table.audit td { border-top: 0; padding: 0; overflow-wrap: anywhere; }
