@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { api, privateLink, feePreview, saveJob, savedJobs, toMoney, type JobResponse, type SavedJob } from "../components/api";
+import { api, privateLink, feePreview, FEE_RATES, saveJob, savedJobs, toMoney, type JobResponse, type SavedJob } from "../components/api";
 
 type Draft = { title: string; amount: string; criteria: string };
 
@@ -50,7 +50,8 @@ function NewJob({ onCreated }: { onCreated: () => void }) {
     const list = [deposit.trim() ? toMoney(deposit) : null, ...stages.map((s) => toMoney(s.amount))];
     return list.filter((x): x is string => !!x);
   }, [deposit, stages]);
-  const fees = feePreview(amounts);
+  const fees = feePreview(amounts, FEE_RATES.NG);
+  const sandboxFees = feePreview(amounts, FEE_RATES.SANDBOX);
 
   const set = (i: number, patch: Partial<Draft>) => setStages((s) => s.map((x, j) => (j === i ? { ...x, ...patch } : x)));
 
@@ -119,7 +120,8 @@ function NewJob({ onCreated }: { onCreated: () => void }) {
       </div>
 
       <p className="muted">
-        Total ${fees.gross}. After PayPal&apos;s published fees (4.90% + $0.30 per payment, about ${fees.fee}) you keep about <b>${fees.net}</b>. This is a preview; the real fee shows on each payment once PayPal takes it.
+        Total ${fees.gross}. For a freelancer in Nigeria, PayPal&apos;s published fee for receiving from abroad is {FEE_RATES.NG.label} per payment (about ${fees.fee}), so you&apos;d keep about <b>${fees.net}</b>.
+        {" "}This demo runs on a US sandbox account, which PayPal charges {FEE_RATES.SANDBOX.label} (about ${sandboxFees.fee}), so the fee on each test payment is lower. Each payment shows the fee PayPal actually took.
       </p>
       <button className="primary" disabled={busy} onClick={create}>{busy ? "Creating… (the server may take a minute to wake)" : "Create job"}</button>
       {err && <p className="err">{err}</p>}

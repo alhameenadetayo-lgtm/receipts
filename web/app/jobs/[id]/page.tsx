@@ -154,7 +154,7 @@ function Milestone({ m, role, keyValue, act }: { m: MilestoneView; role: Role; k
       {m.reservedUntil && <p className="muted" style={{ margin: "4px 0" }}>Reserved until {new Date(m.reservedUntil).toLocaleString()}</p>}
       {m.capture && (
         <p className="muted" style={{ margin: "4px 0" }}>
-          Paid ${m.capture.gross}{m.capture.fee ? ` · PayPal fee $${m.capture.fee} · freelancer gets $${m.capture.net}` : ""}{m.capture.heldReason ? ` · held by PayPal: ${m.capture.heldReason}` : ""}
+          Paid ${m.capture.gross}{m.capture.fee ? ` · fee PayPal took $${m.capture.fee} · freelancer gets $${m.capture.net}` : ""}{m.capture.heldReason ? ` · held by PayPal: ${m.capture.heldReason}` : ""}
         </p>
       )}
       {m.dispute && <p className="err" style={{ margin: "4px 0" }}>Dispute: {m.dispute.status.replace(/_/g, " ").toLowerCase()}{m.dispute.responseDue ? `, response due ${new Date(m.dispute.responseDue).toLocaleDateString()}` : ""}</p>}
