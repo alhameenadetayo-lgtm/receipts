@@ -25,6 +25,10 @@ const STATUS: Record<DefenceStatus, { label: string; pill: string }> = {
   rejected: { label: "Rejected by you", pill: "pill" },
 };
 
+const EVIDENCE: Record<string, string> = { PROOF_OF_FULFILLMENT: "Proof of delivery", OTHER: "Other evidence" };
+
+const RULES = ["Evidence only", "Right dispute and amount", "No links", "Only files the client accepted", "Before PayPal's deadline"];
+
 const CHECKS: [keyof DefenceDraft["verdict"]["checks"], string][] = [
   ["amountMatches", "Amount matches the payment"],
   ["payeeMatches", "Payment went to this freelancer"],
@@ -84,6 +88,7 @@ export function DefencePanel({ msId, keyValue, criteria, canProvideEvidence }: {
           {draft && <span className={STATUS[draft.status].pill}>{STATUS[draft.status].label}</span>}
         </div>
         <p>Three AI models and a set of fixed rules check each other. You make the final call.</p>
+        {draft && <p className="defence-ref">PayPal case <span>{draft.disputeId}</span></p>}
       </div>
 
       {!state && !err ? <p className="muted" style={{ padding: "14px 18px", margin: 0 }}>Loading…</p> : <Chain draft={draft} criteria={criteria} />}
@@ -160,20 +165,30 @@ function Chain({ draft, criteria }: { draft: DefenceDraft | null; criteria: { id
       <Step mark={drafter} title="Draft the evidence" who="Claude Sonnet, sees only the job record">
         {!draft && <span className="muted">Writes your evidence from what the record shows: what was agreed, delivered and accepted.</span>}
         {draft?.notes && (
-          <>
-            <div className="quote">{draft.notes}</div>
+          <figure className="evidence">
+            <figcaption>
+              <span>Evidence note for PayPal</span>
+              {draft.evidenceType && <span className="muted">{EVIDENCE[draft.evidenceType] ?? draft.evidenceType}</span>}
+            </figcaption>
+            <p>{draft.notes}</p>
             {draft.citedFiles.map((c) => (
-              <div key={c.id} style={{ fontSize: 13.5 }}>
-                Attached: {c.filename} <span className="mono muted">sha256 {c.sha256.slice(0, 16)}…</span>
+              <div key={c.id} className="file">
+                <span className="file-name">{c.filename}</span>
+                <span className="file-hash" title={c.sha256}>SHA-256 {c.sha256.slice(0, 12)}…</span>
               </div>
             ))}
-          </>
+          </figure>
         )}
         {drafter === "stop" && v && <span className="err">{v.reason}</span>}
       </Step>
 
       <Step mark={rules} title="Fixed rules" who="Plain code">
         {!draft && <span className="muted">Evidence only, for the right dispute and amount, no links, only files the client accepted, before PayPal&apos;s deadline.</span>}
+        {rules === "pass" && (
+          <ul className="ticks">
+            {RULES.map((r) => <li key={r}>{r}</li>)}
+          </ul>
+        )}
         {rules === "stop" && v && <span className="err">{v.reason}</span>}
       </Step>
 
@@ -183,15 +198,22 @@ function Chain({ draft, criteria }: { draft: DefenceDraft | null; criteria: { id
           <>
             <ul className="checks">
               {CHECKS.map(([k, label]) => (
-                <li key={k}>{v.checks[k] ? <span className="ok" aria-label="passed">✓</span> : <span className="err" aria-label="failed">✕</span>} {label}</li>
+                <li key={k} className={v.checks[k] ? "yes" : "no"}>
+                  <span className="sr-only">{v.checks[k] ? "Passed: " : "Failed: "}</span>{label}
+                </li>
               ))}
             </ul>
-            <div>{v.reason}</div>
+            <p className="verdict">{v.reason}</p>
           </>
         )}
       </Step>
 
       <Step mark={you} title="Your decision" who="Only you can send it">
+        {draft?.status === "ready" && (
+          <span className="muted">
+            Read the note. Filing sends it to PayPal{draft.citedFiles.length ? ` with the attached ${draft.citedFiles.length === 1 ? "file" : "files"}` : ""}. Nothing has been sent yet.
+          </span>
+        )}
         {draft?.status === "filed" && <span>Filed with PayPal on {new Date(draft.decidedAt ?? draft.createdAt).toLocaleString()}.</span>}
         {draft?.status === "rejected" && <span className="muted">You turned this draft down.</span>}
       </Step>
