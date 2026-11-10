@@ -701,10 +701,16 @@ async function defenceState(q: Query, disputeId: string | null) {
   return { draft: rows[0] ? await draftView(q, rows[0]) : null, attemptsLeft: Math.max(0, MAX_ATTEMPTS - rows.length) };
 }
 
+// Disputes whose draft is being written right now. A draft row is only saved when the models finish, so without
+// this a second click (another tab, or a retry after a dropped connection) would start a parallel run, spend twice
+// and slip past MAX_ATTEMPTS. One server instance, so memory is enough.
+const drafting = new Set<string>();
+
 async function getDefence(d: Deps, req: Request, msId: string) {
   const ms = await loadMilestone(d.db.query, msId);
   await authJob(d.db.query, req, ms.job_id, ['freelancer']);
-  return json(200, await defenceState(d.db.query, (await defenceDispute(d.db.query, msId))?.id ?? null));
+  const disputeId = (await defenceDispute(d.db.query, msId))?.id ?? null;
+  return json(200, { ...(await defenceState(d.db.query, disputeId)), drafting: disputeId !== null && drafting.has(disputeId) });
 }
 
 async function draftDefence(d: Deps, req: Request, msId: string) {
@@ -713,6 +719,16 @@ async function draftDefence(d: Deps, req: Request, msId: string) {
   if (!d.llm) throw new HttpError(503, 'the AI is not set up yet');
   const row = await defenceDispute(d.db.query, msId);
   if (!row) throw new HttpError(409, 'there is no dispute on this milestone');
+  if (drafting.has(row.id)) throw new HttpError(409, 'a draft for this dispute is already being written; it shows here when it is done');
+  drafting.add(row.id);
+  try {
+    return await writeDraft({ ...d, llm: d.llm }, ms, msId, row);
+  } finally {
+    drafting.delete(row.id);
+  }
+}
+
+async function writeDraft(d: Deps & { llm: Llm }, ms: Awaited<ReturnType<typeof loadMilestone>>, msId: string, row: { id: string }) {
   const state = await defenceState(d.db.query, row.id);
   if (state.draft?.status === 'filed') throw new HttpError(409, 'evidence was already filed on this dispute');
   if (state.draft?.status === 'ready') return json(200, state); // already waiting for the tap: spends nothing

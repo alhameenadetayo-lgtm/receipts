@@ -4,6 +4,8 @@
   --panel: #ffffff;
   --ink: #121a33;
   --ink-soft: #2c3654;
+  --head: #121a33;        /* the header stays dark ink in both themes */
+  --head-ink: #eef0f3;
   --muted: #5d6578;
   --line: #d9dde5;
   --line-strong: #c3c9d4;
@@ -25,7 +27,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0d1220; --panel: #151c2e; --ink: #e8ebf3; --ink-soft: #c5cbdb; --muted: #959db1;
+    --bg: #0d1220; --panel: #151c2e; --head: #1d2742; --head-ink: #eef0f3; --ink: #e8ebf3; --ink-soft: #c5cbdb; --muted: #959db1;
     --line: #262f45; --line-strong: #36405a; --accent: #e8ebf3; --accent-ink: #0d1220;
     --paid: #4cc38a; --paid-tint: #12301f; --held: #8ea2f0; --held-tint: #1b2547; --todo: #222a3e;
     --warn: #e6a15c; --warn-tint: #33240f; --bad: #f08a80; --bad-tint: #3a1714;
@@ -47,12 +49,12 @@ a:hover { text-decoration-color: currentColor; }
 header.top {
   position: relative; display: flex; justify-content: space-between; align-items: center; gap: 16px;
   padding: 14px max(16px, calc((100% - 980px) / 2 + 16px)) 18px;
-  background: var(--ink); color: var(--bg);
+  background: var(--head); color: var(--head-ink);
 }
 header.top::after {
   content: ""; position: absolute; left: 0; right: 0; bottom: -7px; height: 8px;
-  background: linear-gradient(-45deg, transparent 5px, var(--ink) 0) 0 0 / 12px 8px repeat-x,
-              linear-gradient(45deg, transparent 5px, var(--ink) 0) 0 0 / 12px 8px repeat-x;
+  background: linear-gradient(-45deg, transparent 5px, var(--head) 0) 0 0 / 12px 8px repeat-x,
+              linear-gradient(45deg, transparent 5px, var(--head) 0) 0 0 / 12px 8px repeat-x;
 }
 header.top a { color: inherit; }
 header.top nav { display: flex; gap: 18px; font-size: 14.5px; }
@@ -156,6 +158,8 @@ table.audit td { padding: 6px 10px 6px 0; border-top: 1px solid var(--line); ver
 .evidence .file::before { content: ""; position: absolute; left: 15px; top: 50%; width: 12px; height: 15px; margin-top: -8px; border: 1.5px solid var(--ink-soft); border-radius: 2px 5px 2px 2px; }
 .evidence .file-name { font-weight: 600; }
 .evidence .file-hash { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+/* .chain .step-body ul would otherwise indent these two lists like bullets. */
+.chain .step-body ul.ticks, .chain .step-body ul.checks { padding-left: 0; }
 .ticks { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; padding: 0; list-style: none; }
 .ticks li { font-size: 13px; font-weight: 550; padding: 3px 10px; border-radius: 99px; background: var(--paid-tint); color: var(--paid); }
 .verdict { margin: 10px 0 0; padding-left: 12px; border-left: 2px solid var(--line-strong); color: var(--ink-soft); font-size: 14px; }

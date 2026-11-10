@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { BuyerFields, DefenceDraft, DefenceStatus } from "../../lib/contract.ts";
 import { api, ApiError } from "./api";
 
-type State = { draft: DefenceDraft | null; attemptsLeft: number };
+type State = { draft: DefenceDraft | null; attemptsLeft: number; drafting?: boolean };
 type Mark = "pass" | "stop" | "wait" | "you" | "";
 
 const COMPLAINT: Record<BuyerFields["complaint"], string> = {
@@ -54,6 +54,15 @@ export function DefencePanel({ msId, keyValue, criteria, canProvideEvidence }: {
     load();
   }, [load]);
 
+  // A draft started elsewhere (another tab, or a request the connection dropped) is still being written on the
+  // server: check back until it lands.
+  const writingElsewhere = !!state?.drafting && !busy;
+  useEffect(() => {
+    if (!writingElsewhere) return;
+    const t = setInterval(load, 8000);
+    return () => clearInterval(t);
+  }, [writingElsewhere, load]);
+
   async function run(kind: "draft" | "file" | "reject", fn: () => Promise<unknown>) {
     setBusy(kind);
     setErr("");
@@ -69,9 +78,9 @@ export function DefencePanel({ msId, keyValue, criteria, canProvideEvidence }: {
 
   const draft = state?.draft ?? null;
   const left = state?.attemptsLeft ?? 0;
-  const canDraft = !busy && canProvideEvidence && left > 0 && (!draft || draft.status === "denied" || draft.status === "rejected");
+  const canDraft = !busy && !state?.drafting && canProvideEvidence && left > 0 && (!draft || draft.status === "denied" || draft.status === "rejected");
 
-  const hint = busy === "draft" ? null
+  const hint = busy === "draft" || writingElsewhere ? null
     : !canProvideEvidence && !draft ? "PayPal isn't asking for evidence on this dispute right now."
     : draft?.status === "ready" ? "Every check passed. Read the note, then file it or turn it down."
     : draft?.status === "escalated" ? "The final check wants a person to look harder, so this can't be filed from here. Reject it to try again, or answer in PayPal."
@@ -95,6 +104,7 @@ export function DefencePanel({ msId, keyValue, criteria, canProvideEvidence }: {
 
       <div className="defence-foot">
         {busy === "draft" ? <span className="working">Reading, drafting and checking. This takes a minute or two.</span>
+          : writingElsewhere ? <span className="working">A draft is being written. It shows here when it&apos;s done.</span>
           : busy === "file" ? <span className="working">Sending to PayPal…</span>
           : hint && <p className="hint">{hint}</p>}
         {canDraft && (
