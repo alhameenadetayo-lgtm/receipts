@@ -1,5 +1,5 @@
 "use client";
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 import { absorbFragment, api, privateLink, keyFor, saveJob, type JobResponse, type MilestoneView, type Role, type SavedJob } from "../../../components/api";
 import { ProgressBar } from "../../../components/ProgressBar";
 import { DefencePanel } from "../../../components/DefencePanel";
@@ -44,8 +44,12 @@ export default function JobPage({ params, searchParams }: { params: Promise<{ id
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  // One refresh at a time: while the server wakes, a refresh can take a minute, and the 8-second timer would
+  // otherwise stack them up.
+  const loading = useRef(false);
   const load = useCallback(async () => {
-    if (!me) return;
+    if (!me || loading.current) return;
+    loading.current = true;
     try {
       const r = await api<JobResponse>(`/api/jobs/${id}`, { key: me.key });
       setData(r);
@@ -53,6 +57,8 @@ export default function JobPage({ params, searchParams }: { params: Promise<{ id
       setErr("");
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      loading.current = false;
     }
   }, [id, me]);
 
@@ -116,6 +122,7 @@ export default function JobPage({ params, searchParams }: { params: Promise<{ id
 function Milestone({ m, role, keyValue, act }: { m: MilestoneView; role: Role; keyValue: string; act: (fn: () => Promise<unknown>, ok?: string) => Promise<void> }) {
   const [approveUrl, setApproveUrl] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [picker, setPicker] = useState(0); // bumped after a delivery so the file input clears too
   const [crit, setCrit] = useState("");
   const [chCrit, setChCrit] = useState(m.criteria[0]?.id ?? "");
   const [chNote, setChNote] = useState("");
@@ -192,7 +199,7 @@ function Milestone({ m, role, keyValue, act }: { m: MilestoneView; role: Role; k
           {m.status === "awaiting_payment" && link && <p className="muted">Waiting for the client to approve in PayPal. They see the button on their page.</p>}
           {m.kind === "stage" && m.status === "reserved" && (
             <div className="row" style={{ marginTop: 6 }}>
-              <input type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} style={{ maxWidth: 260 }} />
+              <input key={picker} type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} style={{ maxWidth: 260 }} aria-label="File to deliver" />
               <select value={chosen} onChange={(e) => setCrit(e.target.value)} style={{ maxWidth: 260 }} aria-label="Criterion this file is for">
                 {m.criteria.map((c) => <option key={c.id} value={c.id}>For: {c.text}</option>)}
                 <option value="none">Not for a specific criterion</option>
@@ -203,6 +210,7 @@ function Milestone({ m, role, keyValue, act }: { m: MilestoneView; role: Role; k
                 if (chosen !== "none") fd.append("criterionId", chosen);
                 await api(`/api/milestones/${m.id}/files`, { key: keyValue, form: fd });
                 setFile(null);
+                setPicker((n) => n + 1);
                 setCrit("");
               }, "Delivered. The file is fingerprinted and the client can review it.")}>
                 {m.reviewState === "changes_requested" ? "Resubmit" : "Deliver"}

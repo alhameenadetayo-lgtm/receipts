@@ -56,13 +56,22 @@ function Console() {
 
   useEffect(() => {
     if (!jobId || !key) return;
-    const load = () =>
+    let inFlight = false; // one refresh at a time, so a slow wake-up doesn't stack them
+    let live = true;
+    const load = () => {
+      if (inFlight) return;
+      inFlight = true;
       api<{ rows: LedgerRow[] }>(`/api/ledger?jobId=${encodeURIComponent(jobId)}`, { key })
-        .then((r) => (setRows(r.rows), setErr("")))
-        .catch((e) => setErr(e.message));
+        .then((r) => live && (setRows(r.rows), setErr("")))
+        .catch((e) => live && setErr(e.message))
+        .finally(() => (inFlight = false));
+    };
     load();
     const t = setInterval(load, 8000);
-    return () => clearInterval(t);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
   }, [jobId, key]);
 
   async function openAudit(ms: LedgerRow) {

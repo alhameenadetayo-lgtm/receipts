@@ -83,7 +83,7 @@ export default function TrustPacket({ params }: { params: Promise<{ id: string }
               <tr><th>PayPal</th><td>
                 {m.capture ? <>capture <span className="mono">{m.capture.id}</span>, gross ${m.capture.gross}{m.capture.fee ? `, fee $${m.capture.fee}, net $${m.capture.net}` : ""}{m.capture.heldReason ? `, held: ${m.capture.heldReason}` : ""}</> : m.reservedUntil ? `reserved until ${new Date(m.reservedUntil).toLocaleString()}` : "—"}
               </td></tr>
-              {m.dispute && <tr><th>Dispute</th><td><span className="mono">{m.dispute.id}</span> · {m.dispute.status}</td></tr>}
+              {m.dispute && <tr><th>Dispute</th><td><span className="mono">{m.dispute.id}</span> · {m.dispute.status.replace(/_/g, " ").toLowerCase()}</td></tr>}
             </tbody>
           </table>
 

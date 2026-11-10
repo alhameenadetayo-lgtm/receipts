@@ -187,6 +187,39 @@ test('a compromised drafter is stopped: whatever it returns can only ever be evi
   assert.equal((await call('POST', `/api/milestones/${msId}/defence`, fk)).status, 409, 'attempts are capped');
 });
 
+test('a second click while a draft is being written is refused, so it cannot spend twice or pass the attempt cap', async () => {
+  const { msId, fk } = await disputedStage();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  script.reader = async () => { await gate; return GOOD_READER; };
+  const first = call('POST', `/api/milestones/${msId}/defence`, fk);
+  while (!llmCalls.some((c) => c.role === 'reader')) await new Promise((r) => setTimeout(r, 5));
+
+  const second = await call('POST', `/api/milestones/${msId}/defence`, fk);
+  assert.equal(second.status, 409);
+  assert.match(second.body.error, /already being written/);
+  assert.equal((await call('GET', `/api/milestones/${msId}/defence`, fk)).body.drafting, true, 'the page can show that a draft is on its way');
+
+  release();
+  const done = await first;
+  assert.equal(done.status, 201);
+  assert.equal(done.body.attemptsLeft, 2, 'one attempt used, not two');
+  assert.equal(llmCalls.filter((c) => c.role === 'reader').length, 1, 'only one run reached the models');
+  assert.equal((await call('GET', `/api/milestones/${msId}/defence`, fk)).body.drafting, false);
+});
+
+test('a failed run frees the dispute for the next attempt', async () => {
+  const { msId, fk } = await disputedStage();
+  const working = handle;
+  // PayPal unreachable: the run throws before any model is called.
+  handle = createHandler({ db: fromPglite(db), paypal: { ...fakePaypal(), async call() { throw new Error('PayPal is down'); } }, appUrl: APP, webhookId: 'WH', llm: fakeLlm });
+  assert.ok((await call('POST', `/api/milestones/${msId}/defence`, fk)).status >= 500);
+  assert.equal(llmCalls.length, 0);
+  handle = working;
+  const ok = await call('POST', `/api/milestones/${msId}/defence`, fk);
+  assert.equal(ok.status, 201, 'not stuck as "already being written"');
+});
+
 test('the gate fails closed: refusal, error, bad output and an approve with a failed check all deny', async () => {
   assert.equal(verdictFrom({ ...GOOD_VERDICT, evidence_supports: false }).decision, 'deny');
   assert.equal(verdictFrom({ ...GOOD_VERDICT, amount_matches: 'true' }).decision, 'deny');
