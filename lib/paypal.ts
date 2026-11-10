@@ -22,6 +22,8 @@ export type Paypal = {
   call<T = any>(method: 'GET' | 'POST', path: string, body?: unknown, requestId?: string): Promise<T>;
   // Raw-body POST, used only for webhook signature verification.
   postRaw<T = any>(path: string, body: string): Promise<T>;
+  // Multipart POST, used only for filing dispute evidence with its files.
+  postForm<T = any>(path: string, form: FormData, requestId?: string): Promise<T>;
 };
 
 export function createPaypal(cfg: PaypalConfig, fetchFn: typeof fetch = fetch): Paypal {
@@ -42,12 +44,12 @@ export function createPaypal(cfg: PaypalConfig, fetchFn: typeof fetch = fetch): 
     return cached.value;
   }
 
-  async function send(method: string, path: string, body: string | undefined, requestId?: string) {
+  async function send(method: string, path: string, body: string | FormData | undefined, requestId?: string) {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${await token()}`,
-      'Content-Type': 'application/json',
       Prefer: 'return=representation',
     };
+    if (!(body instanceof FormData)) headers['Content-Type'] = 'application/json'; // fetch sets the multipart boundary itself
     // Same request id = PayPal returns the first result instead of acting twice.
     if (method !== 'GET' && requestId) headers['PayPal-Request-Id'] = requestId;
     const res = await fetchFn(`${base}${path}`, { method, headers, body });
@@ -64,5 +66,6 @@ export function createPaypal(cfg: PaypalConfig, fetchFn: typeof fetch = fetch): 
   return {
     call: (method, path, body, requestId) => send(method, path, body === undefined ? undefined : JSON.stringify(body), requestId),
     postRaw: (path, body) => send('POST', path, body),
+    postForm: (path, form, requestId) => send('POST', path, form, requestId),
   };
 }

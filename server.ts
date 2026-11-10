@@ -3,9 +3,11 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
+import Anthropic from '@anthropic-ai/sdk';
 import pg from 'pg';
 import { createHandler } from './lib/api.ts';
 import { fromPgPool } from './lib/db.ts';
+import { createLlm } from './lib/defence.ts';
 import { createPaypal } from './lib/paypal.ts';
 
 if (existsSync('.env')) {
@@ -25,11 +27,13 @@ if (!rows[0].t) {
   await pool.query(readFileSync(new URL('./db/schema.sql', import.meta.url), 'utf8'));
   console.log('Created tables from db/schema.sql');
 }
+await pool.query(readFileSync(new URL('./db/defence.sql', import.meta.url), 'utf8'));
 const handle = createHandler({
   db: fromPgPool(pool),
   paypal: createPaypal({ clientId: process.env.PAYPAL_CLIENT_ID!, clientSecret: process.env.PAYPAL_CLIENT_SECRET! }),
   appUrl: process.env.APP_URL!.replace(/\/$/, ''),
   webhookId: process.env.PAYPAL_WEBHOOK_ID || null,
+  llm: process.env.ANTHROPIC_API_KEY ? createLlm(new Anthropic()) : null,
 });
 
 const port = Number(process.env.PORT ?? 3001);
