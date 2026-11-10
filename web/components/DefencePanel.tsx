@@ -4,6 +4,7 @@ import type { BuyerFields, DefenceDraft, DefenceStatus } from "../../lib/contrac
 import { api, ApiError } from "./api";
 
 type State = { draft: DefenceDraft | null; attemptsLeft: number };
+type Mark = "pass" | "stop" | "wait" | "you" | "";
 
 const COMPLAINT: Record<BuyerFields["complaint"], string> = {
   not_received: "says the work wasn't received",
@@ -13,25 +14,23 @@ const COMPLAINT: Record<BuyerFields["complaint"], string> = {
   duplicate: "says they were charged twice",
   wrong_amount: "says the amount was wrong",
   other: "has another complaint",
-  unclear: "complaint is unclear",
+  unclear: "has an unclear complaint",
 };
 
-const STATUS: Record<DefenceStatus, { label: string; pill: string; help: string }> = {
-  ready: { label: "Ready for you", pill: "pill paid", help: "Every check passed. Nothing is sent to PayPal until you tap File." },
-  escalated: { label: "Needs a closer look", pill: "pill warn", help: "The final check wants a person to look harder, so this draft can't be filed from here. Reject it to try again, or answer in PayPal yourself." },
-  denied: { label: "Stopped", pill: "pill bad", help: "A check failed, so this draft can't be filed. Nothing was sent to PayPal." },
-  filed: { label: "Filed with PayPal", pill: "pill paid", help: "PayPal has the evidence." },
-  rejected: { label: "Rejected by you", pill: "pill", help: "You turned this draft down. Nothing was sent to PayPal." },
+const STATUS: Record<DefenceStatus, { label: string; pill: string }> = {
+  ready: { label: "Ready to file", pill: "pill paid" },
+  escalated: { label: "Needs a closer look", pill: "pill warn" },
+  denied: { label: "Stopped", pill: "pill bad" },
+  filed: { label: "Filed with PayPal", pill: "pill paid" },
+  rejected: { label: "Rejected by you", pill: "pill" },
 };
 
 const CHECKS: [keyof DefenceDraft["verdict"]["checks"], string][] = [
   ["amountMatches", "Amount matches the payment"],
   ["payeeMatches", "Payment went to this freelancer"],
-  ["evidenceSupports", "Evidence supports the note"],
+  ["evidenceSupports", "Evidence backs up the note"],
   ["noInjectionInfluence", "Not swayed by the buyer's message"],
 ];
-
-const BY = { rules: "the fixed rules", second_key: "the final AI check (Opus)", system: "the system" } as const;
 
 /** The freelancer's view of the AI dispute defence for one disputed stage. */
 export function DefencePanel({ msId, keyValue, criteria, canProvideEvidence }: { msId: string; keyValue: string; criteria: { id: string; text: string }[]; canProvideEvidence: boolean }) {
@@ -68,22 +67,39 @@ export function DefencePanel({ msId, keyValue, criteria, canProvideEvidence }: {
   const left = state?.attemptsLeft ?? 0;
   const canDraft = !busy && canProvideEvidence && left > 0 && (!draft || draft.status === "denied" || draft.status === "rejected");
 
+  const hint = busy === "draft" ? null
+    : !canProvideEvidence && !draft ? "PayPal isn't asking for evidence on this dispute right now."
+    : draft?.status === "ready" ? "Every check passed. Read the note, then file it or turn it down."
+    : draft?.status === "escalated" ? "The final check wants a person to look harder, so this can't be filed from here. Reject it to try again, or answer in PayPal."
+    : draft?.status === "filed" ? "PayPal has your evidence."
+    : left === 0 && state ? "All AI attempts on this dispute are used. Answer it directly in PayPal."
+    : state ? `Nothing goes to PayPal until you press File. ${left} attempt${left === 1 ? "" : "s"} left on this dispute.`
+    : null;
+
   return (
-    <div className="note" style={{ marginTop: 8 }}>
-      <b>Defend this dispute with AI</b>
-      <p className="muted" style={{ margin: "4px 0" }}>
-        One AI reads the buyer&apos;s message, a second drafts your evidence from the job record, then fixed rules and a third AI check it. Nothing goes to PayPal until you tap File.
-      </p>
+    <section className="defence" aria-label="AI dispute defence">
+      <div className="defence-head">
+        <div className="row">
+          <h3 className="grow">Defend this dispute</h3>
+          {draft && <span className={STATUS[draft.status].pill}>{STATUS[draft.status].label}</span>}
+        </div>
+        <p>Three AI models and a set of fixed rules check each other. You make the final call.</p>
+      </div>
 
-      {!state && !err && <p className="muted">Loading…</p>}
-      {!canProvideEvidence && !draft && <p className="muted">PayPal isn&apos;t asking for evidence on this dispute right now.</p>}
+      {!state && !err ? <p className="muted" style={{ padding: "14px 18px", margin: 0 }}>Loading…</p> : <Chain draft={draft} criteria={criteria} />}
 
-      {draft && <DraftView draft={draft} criteria={criteria} />}
-
-      <div className="row" style={{ marginTop: 8 }}>
+      <div className="defence-foot">
+        {busy === "draft" ? <span className="working">Reading, drafting and checking. This takes a minute or two.</span>
+          : busy === "file" ? <span className="working">Sending to PayPal…</span>
+          : hint && <p className="hint">{hint}</p>}
         {canDraft && (
           <button className="primary" onClick={() => run("draft", () => api(`/api/milestones/${msId}/defence`, { key: keyValue, json: {} }))}>
-            {draft ? "Try again" : "Draft my defence"}
+            {draft ? "Draft again" : "Draft my defence"}
+          </button>
+        )}
+        {(draft?.status === "ready" || draft?.status === "escalated") && !busy && (
+          <button className="danger" onClick={() => run("reject", () => api(`/api/milestones/${msId}/defence/reject`, { key: keyValue, json: { draftId: draft.id } }))}>
+            Reject
           </button>
         )}
         {draft?.status === "ready" && !busy && (
@@ -94,76 +110,91 @@ export function DefencePanel({ msId, keyValue, criteria, canProvideEvidence }: {
             File with PayPal
           </button>
         )}
-        {(draft?.status === "ready" || draft?.status === "escalated") && !busy && (
-          <button className="danger" onClick={() => run("reject", () => api(`/api/milestones/${msId}/defence/reject`, { key: keyValue, json: { draftId: draft.id } }))}>
-            Reject this draft
-          </button>
-        )}
       </div>
-      {busy === "draft" && <p className="muted">The AI is working. This can take a minute or two.</p>}
-      {busy === "file" && <p className="muted">Sending to PayPal…</p>}
-      {state && !draft?.status.match(/^(ready|filed)$/) && canProvideEvidence && (
-        <p className="muted" style={{ margin: "4px 0", fontSize: 13 }}>
-          {left > 0 ? `${left} AI attempt${left === 1 ? "" : "s"} left on this dispute.` : "All AI attempts on this dispute are used. Answer it directly in PayPal."}
-        </p>
-      )}
-      {err && <p className="err">{err}</p>}
-    </div>
+      {err && <p className="err" style={{ padding: "0 18px 14px", margin: 0 }}>{err}</p>}
+    </section>
   );
 }
 
-function DraftView({ draft, criteria }: { draft: DefenceDraft; criteria: { id: string; text: string }[] }) {
-  const s = STATUS[draft.status];
-  const f = draft.buyerFields;
-  const v = draft.verdict;
+function Step({ mark, title, who, children }: { mark: Mark; title: string; who: string; children?: React.ReactNode }) {
   return (
-    <div style={{ marginTop: 6 }}>
-      <div className="row">
-        <span className={s.pill}>{s.label}</span>
-        <span className="muted grow" style={{ fontSize: 13 }}>{new Date(draft.decidedAt ?? draft.createdAt).toLocaleString()}</span>
+    <li className={mark}>
+      <span className="dot" aria-hidden />
+      <div className="step-title">
+        {title} <span className="step-who">{who}</span>
+        {mark === "pass" && <span className="sr-only"> (passed)</span>}
+        {mark === "stop" && <span className="pill bad">Stopped here</span>}
+        {mark === "wait" && <span className="pill warn">Wants a person</span>}
       </div>
-      <p style={{ margin: "4px 0" }}>{s.help}</p>
+      {children && <div className="step-body">{children}</div>}
+    </li>
+  );
+}
 
-      {f && (
-        <div style={{ margin: "6px 0" }}>
-          <b>What the buyer says</b> <span className="muted">(read by the first AI, which can only fill in fixed fields)</span>
-          <ul style={{ margin: "4px 0" }}>
-            <li>The buyer {COMPLAINT[f.complaint]}.</li>
-            {f.disputedCriteria.length > 0 && <li>Disputes: {f.disputedCriteria.map((id) => criteria.find((c) => c.id === id)?.text ?? id).join("; ")}</li>}
-            <li>Admits receiving the work: {f.saysWorkWasDelivered}</li>
-            <li>Asks for a refund: {f.asksSellerForRefund ? "yes" : "no"}</li>
-          </ul>
-          {f.containsInstructionsToAi && (
-            <p className="err" style={{ margin: "4px 0" }}>⚠ The buyer&apos;s message tried to give orders to an AI. They were ignored: the drafting AI never sees the buyer&apos;s words.</p>
-          )}
-        </div>
-      )}
+function Chain({ draft, criteria }: { draft: DefenceDraft | null; criteria: { id: string; text: string }[] }) {
+  const f = draft?.buyerFields ?? null;
+  const v = draft?.verdict;
+  const failedAt = v?.by === "system" ? (f ? "draft" : "read") : null;
+  const reader: Mark = !draft ? "" : f ? "pass" : "stop";
+  const drafter: Mark = !draft ? "" : draft.notes ? "pass" : failedAt === "draft" ? "stop" : "";
+  const rules: Mark = !draft?.notes ? "" : v?.by === "rules" ? "stop" : "pass";
+  const second: Mark = v?.by !== "second_key" ? "" : v.decision === "approve" ? "pass" : v.decision === "escalate" ? "wait" : "stop";
+  const you: Mark = draft?.status === "filed" ? "pass" : draft?.status === "ready" ? "you" : "";
 
-      {draft.notes && (
-        <div style={{ margin: "6px 0" }}>
-          <b>Evidence note{draft.evidenceType ? ` (${draft.evidenceType === "PROOF_OF_FULFILLMENT" ? "proof of delivery" : "other"})` : ""}</b>
-          <div style={{ whiteSpace: "pre-wrap", margin: "4px 0" }}>{draft.notes}</div>
-          {draft.citedFiles.length > 0 && (
-            <div style={{ fontSize: 13 }}>
-              {draft.citedFiles.map((c) => (
-                <div key={c.id}>📎 {c.filename} <span className="mono muted">sha256 {c.sha256.slice(0, 16)}…</span></div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      <div style={{ margin: "6px 0" }}>
-        <b>Final decision by {BY[v.by]}</b>
-        {v.by === "second_key" && (
-          <ul style={{ margin: "4px 0" }}>
-            {CHECKS.map(([k, label]) => (
-              <li key={k}>{v.checks[k] ? <span className="ok">✓</span> : <span className="err">✗</span>} {label}</li>
-            ))}
-          </ul>
+  return (
+    <ol className="chain">
+      <Step mark={reader} title="Read the buyer's message" who="Claude Haiku, no tools">
+        {!draft && <span className="muted">Turns the buyer&apos;s words into a few fixed answers. Nothing they write can pass through as an instruction.</span>}
+        {f && (
+          <>
+            <ul>
+              <li>The buyer {COMPLAINT[f.complaint]}{f.disputedCriteria.length > 0 && `: ${f.disputedCriteria.map((id) => criteria.find((c) => c.id === id)?.text ?? id).join("; ")}`}.</li>
+              <li>Admits receiving the work: {f.saysWorkWasDelivered}. Wants a refund: {f.asksSellerForRefund ? "yes" : "no"}.</li>
+            </ul>
+            {f.containsInstructionsToAi && <div className="alert">The buyer&apos;s message tried to give orders to an AI. It was flagged and ignored.</div>}
+          </>
         )}
-        <div style={{ whiteSpace: "pre-wrap" }}>{v.reason}</div>
-      </div>
-    </div>
+        {reader === "stop" && v && <span className="err">{v.reason}</span>}
+      </Step>
+
+      <Step mark={drafter} title="Draft the evidence" who="Claude Sonnet, sees only the job record">
+        {!draft && <span className="muted">Writes your evidence from what the record shows: what was agreed, delivered and accepted.</span>}
+        {draft?.notes && (
+          <>
+            <div className="quote">{draft.notes}</div>
+            {draft.citedFiles.map((c) => (
+              <div key={c.id} style={{ fontSize: 13.5 }}>
+                Attached: {c.filename} <span className="mono muted">sha256 {c.sha256.slice(0, 16)}…</span>
+              </div>
+            ))}
+          </>
+        )}
+        {drafter === "stop" && v && <span className="err">{v.reason}</span>}
+      </Step>
+
+      <Step mark={rules} title="Fixed rules" who="Plain code">
+        {!draft && <span className="muted">Evidence only, for the right dispute and amount, no links, only files the client accepted, before PayPal&apos;s deadline.</span>}
+        {rules === "stop" && v && <span className="err">{v.reason}</span>}
+      </Step>
+
+      <Step mark={second} title="Final check" who="Claude Opus, a second key">
+        {!draft && <span className="muted">Checks the amount, the payee and the evidence against the record before you see it.</span>}
+        {v?.by === "second_key" && (
+          <>
+            <ul className="checks">
+              {CHECKS.map(([k, label]) => (
+                <li key={k}>{v.checks[k] ? <span className="ok" aria-label="passed">✓</span> : <span className="err" aria-label="failed">✕</span>} {label}</li>
+              ))}
+            </ul>
+            <div>{v.reason}</div>
+          </>
+        )}
+      </Step>
+
+      <Step mark={you} title="Your decision" who="Only you can send it">
+        {draft?.status === "filed" && <span>Filed with PayPal on {new Date(draft.decidedAt ?? draft.createdAt).toLocaleString()}.</span>}
+        {draft?.status === "rejected" && <span className="muted">You turned this draft down.</span>}
+      </Step>
+    </ol>
   );
 }
