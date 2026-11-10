@@ -15,8 +15,10 @@ export default function Home() {
   useEffect(() => setJobs(savedJobs()), []);
   return (
     <main className="wrap">
-      <h1>Receipts</h1>
-      <p className="muted">Scope the job, get money reserved up front, and get paid stage by stage as the client confirms.</p>
+      <h1 style={{ maxWidth: "16ch" }}>Get paid for every stage you finish.</h1>
+      <p className="muted" style={{ fontSize: 17, marginTop: 0 }}>
+        Your client&apos;s money is reserved in PayPal before you start. Each stage pays out when they confirm it, and every file you deliver is fingerprinted, so a dispute meets a record.
+      </p>
       <NewJob onCreated={() => setJobs(savedJobs())} />
       <div className="panel">
         <h2>Jobs on this device</h2>

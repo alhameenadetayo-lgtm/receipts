@@ -2,6 +2,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 import { absorbFragment, api, privateLink, keyFor, saveJob, type JobResponse, type MilestoneView, type Role, type SavedJob } from "../../../components/api";
 import { ProgressBar } from "../../../components/ProgressBar";
+import { DefencePanel } from "../../../components/DefencePanel";
 import { pillClass } from "../../../components/status";
 
 const PAYMENT_MSG: Record<string, string> = {
@@ -156,8 +157,9 @@ function Milestone({ m, role, keyValue, act }: { m: MilestoneView; role: Role; k
           Paid ${m.capture.gross}{m.capture.fee ? ` · PayPal fee $${m.capture.fee} · freelancer gets $${m.capture.net}` : ""}{m.capture.heldReason ? ` · held by PayPal: ${m.capture.heldReason}` : ""}
         </p>
       )}
-      {m.dispute && <p className="err" style={{ margin: "4px 0" }}>Dispute {m.dispute.status}{m.dispute.responseDue ? `, response due ${new Date(m.dispute.responseDue).toLocaleDateString()}` : ""}</p>}
-      {m.accepted && <p className="muted" style={{ margin: "4px 0" }}>Accepted by {m.accepted.by === "client_agent" ? "the client's agent" : "the client"} on {new Date(m.accepted.at).toLocaleString()}</p>}
+      {m.dispute && <p className="err" style={{ margin: "4px 0" }}>Dispute: {m.dispute.status.replace(/_/g, " ").toLowerCase()}{m.dispute.responseDue ? `, response due ${new Date(m.dispute.responseDue).toLocaleDateString()}` : ""}</p>}
+      {m.dispute && role === "freelancer" && <DefencePanel msId={m.id} keyValue={keyValue} criteria={m.criteria} canProvideEvidence={m.dispute.canProvideEvidence} />}
+      {m.accepted &&<p className="muted" style={{ margin: "4px 0" }}>Accepted by {m.accepted.by === "client_agent" ? "the client's agent" : "the client"} on {new Date(m.accepted.at).toLocaleString()}</p>}
 
       {m.changeRequests.length > 0 && (
         <div>
