@@ -35,6 +35,15 @@ export default function JobPage({ params, searchParams }: { params: Promise<{ id
     };
   }, [id, sp.as]);
 
+  // A private link pasted into a tab already on this job only changes the #fragment, which doesn't reload the page.
+  useEffect(() => {
+    const onHash = () => {
+      if (new URLSearchParams(window.location.hash.slice(1)).get("k")) window.location.reload();
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
   const load = useCallback(async () => {
     if (!me) return;
     try {
@@ -81,7 +90,7 @@ export default function JobPage({ params, searchParams }: { params: Promise<{ id
     <main className="wrap">
       <h1>{data.job.title}</h1>
       <p className="muted">
-        {role === "freelancer" ? `For ${data.job.clientName}` : "You are the client"} · {data.milestones.length} payments · <span className="pill">{role}</span>
+        {role === "freelancer" && `For ${data.job.clientName} · `}{data.milestones.length} payments · <span className="pill">You&apos;re the {role}</span>
         {role === "freelancer" && <> · <a href={`/console?job=${id}`}>Console</a></>} · <a href={`/jobs/${id}/packet`}>Trust Packet</a>
       </p>
       <div className="panel"><ProgressBar milestones={data.milestones} progress={data.progress} /></div>

@@ -80,19 +80,32 @@ export async function api<T>(path: string, opts: { key?: string; method?: string
   const headers: Record<string, string> = {};
   if (opts.key) headers.Authorization = `Bearer ${opts.key}`;
   if (opts.json !== undefined) headers["Content-Type"] = "application/json";
-  let r: Response;
-  try {
-    r = await fetch(path, {
-      method: opts.method ?? (opts.json !== undefined || opts.form ? "POST" : "GET"),
-      headers,
-      body: opts.form ?? (opts.json !== undefined ? JSON.stringify(opts.json) : undefined),
-    });
-  } catch {
-    throw new ApiError(0, "Can't reach the server. It may be waking up, so try again in a minute.");
+  const waking = "The server is waking up. Try again in a minute.";
+  // On the free plan the backend sleeps. While it wakes, Render's edge answers 429/502/503/504 itself, before our
+  // server sees the request, so those (no {error} from us) are safe to retry for about a minute.
+  for (let attempt = 0; ; attempt++) {
+    let r: Response;
+    try {
+      r = await fetch(path, {
+        method: opts.method ?? (opts.json !== undefined || opts.form ? "POST" : "GET"),
+        headers,
+        body: opts.form ?? (opts.json !== undefined ? JSON.stringify(opts.json) : undefined),
+      });
+    } catch {
+      throw new ApiError(0, `Can't reach the server. ${waking}`);
+    }
+    const body = (await r.json().catch(() => ({}))) as { error?: string };
+    if (r.ok) return body as T;
+    if (body.error) throw new ApiError(r.status, body.error);
+    if ([429, 502, 503, 504].includes(r.status)) {
+      if (attempt < 12) {
+        await new Promise((ok) => setTimeout(ok, 5000));
+        continue;
+      }
+      throw new ApiError(r.status, waking);
+    }
+    throw new ApiError(r.status, `Request failed (${r.status})`);
   }
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new ApiError(r.status, (body as { error?: string }).error ?? `Request failed (${r.status})`);
-  return body as T;
 }
 
 /** Money strings to cents without floats. */
