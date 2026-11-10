@@ -117,7 +117,6 @@ button:disabled { opacity: .45; cursor: default; transform: none; }
 .mono { font-family: var(--mono); font-size: 12px; word-break: break-all; letter-spacing: -.01em; }
 .grid-h { height: 460px; }
 
-table.kv, table.audit, .grid-h { font-variant-numeric: tabular-nums; }
 table.kv { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14.5px; }
 table.kv th { text-align: left; vertical-align: top; width: 170px; padding: 8px 12px 8px 0; color: var(--muted); font-weight: 550; }
 table.kv td { padding: 8px 0; border-top: 1px solid var(--line); }
